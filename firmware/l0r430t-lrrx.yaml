@@ -1,0 +1,1007 @@
+esphome:
+  name: l0r430t-lrrx
+  friendly_name: LRRX
+  comment: LoRaBot Receive Node - Long-range radio receiver for remote sensor monitoring
+  project:
+    name: "ManRiver.L0R430T"
+    version: "1.0.0"  
+  platformio_options:
+    build_flags: 
+      # Hardware-specific definitions for Seeed Studio XIAO ESP32S3
+      # Reference: https://github.com/lucaskatayama/platform-espressif32/blob/develop/boards/seeed_xiao_esp32s3.json
+      - '-DBOARD_HAS_PSRAM'                               # Enable PSRAM support for additional memory
+      - '-DDISABLE_ALL_LIBRARY_WARNINGS'                 # Clean compilation output by suppressing library warnings
+      - "-DARDUINO_XIAO_ESP32S3"                          # Board identifier for proper pin mapping
+      - "-DBOARD_HAS_PSRAM"                               # Duplicate declaration (kept for compatibility)
+      - "-DARDUINO_USB_MODE=1"                            # Enable USB Serial/JTAG functionality
+      - "-DARDUINO_USB_CDC_ON_BOOT=1"                     # CRITICAL: Enables USB-CDC on boot for serial communication
+                                                           # Required for debugging and OTA updates
+      - "-DARDUINO_RUNNING_CORE=1"                        # Pin Arduino framework to CPU core 1 for stability
+      - "-DARDUINO_EVENT_RUNNING_CORE=1"                  # Pin event handling to CPU core 1
+      - '-DCORE_DEBUG_LEVEL=0'                            # Debug levels: 0=None, 1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose
+      - '-DCONFIG_ARDUHAL_LOG_COLORS'                     # Enable colored logging output for easier debugging
+      
+    # Memory configuration for XIAO ESP32S3 with PSRAM
+    board_build.arduino.memory_type: qio_opi             # Quad I/O with OPI PSRAM support
+    board_build.partitions: 'default_8MB.csv'            # Custom partition table for 8MB flash
+    board_build.f_flash: 80000000L                        # Flash frequency: 80MHz (stable for most conditions)
+    board_build.flash_mode: qio                           # Quad I/O mode for faster flash access
+    
+    # CPU frequency optimization (power consumption priority for receiver node)
+    # board_build.f_cpu: 240000000L                      # Maximum performance (240MHz) - unnecessary for receiver
+    # board_build.f_cpu: 200000000L                      # High performance (200MHz) - tested, overkill for RX
+    # board_build.f_cpu: 160000000L                      # Balanced performance (160MHz) - tested, adequate
+    board_build.f_cpu: 80000000L                          # Power saving mode (80MHz) - optimal for battery operation
+                                                           # Sufficient for LoRa RX, sensor reading, and WiFi telemetry
+    
+    # Memory and upload configuration for XIAO ESP32S3
+    board_upload.maximum_size: '8388608'                  # 8MB = 8 * 1024 * 1024 bytes flash size
+    board_upload.maximum_ram_size: '327680'               # 320KB = 320 * 1024 bytes (ESP32-S3 SRAM)
+    board_upload.speed: '460800'                          # Upload baud rate (matches debug UART speed)    
+  on_boot:
+    # ========================================================================
+    # RECEIVER NODE INITIALIZATION SEQUENCE
+    # ========================================================================
+    # Priority -100: Execute after sensor setup, before WiFi initialization
+    # This sequence establishes initial LoRa connectivity status broadcast
+    - priority: -100.0 
+      then:
+        # Visual indication of successful boot (LED feedback)
+        - light.turn_on:
+            id: lora_led
+        - delay: 10s
+        - light.turn_off:
+            id: lora_led
+            
+        # Broadcast initial connectivity status via LoRa
+        # Protocol: "C:0:1" (WiFi connected) or "C:0:0" (WiFi disconnected)
+        # This allows LRTX node to know receiver availability immediately
+        - sx1262.send_packet:
+            data: !lambda |-                   
+              if (id(mcu_local_wifi).state) {
+                std::string s = "C:0:1";//WiFi connected status
+                return std::vector<uint8_t>(s.begin(), s.end());                    
+              } else {
+                std::string s = "C:0:0";//WiFi disconnected status
+                return std::vector<uint8_t>(s.begin(), s.end());
+              }         
+
+esp32:
+  board: seeed_xiao_esp32s3                               # Seeed Studio XIAO ESP32S3 board definition
+  variant: esp32s3                                        # ESP32-S3 variant with dual-core ARM Cortex-M0+
+  flash_size: 8MB                                         # 8MB flash memory (XIAO ESP32S3 configuration)
+  framework:
+    type: arduino                                         # Arduino framework for ease of development
+    version: latest                                       # Use latest stable Arduino framework
+    platform_version: 6.11.0                             # Specific platform version for reproducible builds
+                                                          # Reference: https://github.com/platformio/platform-espressif32/releases
+external_components:
+  # ========================================================================
+  # CUSTOM COMPONENTS CONFIGURATION
+  # ========================================================================
+  # Local components directory containing custom LoRa SX1262 driver
+  # Path relative to ESPHome configuration directory
+  - source:
+      type: local
+      path: components                                    # Custom SX1262 LoRa component implementation
+  
+  # Alternative external component sources (commented for reference)
+  # GitHub-hosted SX1262 component (alternative implementation)
+  # - source: github://christianhubmann/esphome_component_sx1262@main
+  #   components: [ sx1262 ]
+
+  # UART P2P communication component (for inter-node communication)
+  # - source: 
+  #     url: https://github.com/KG3RK3N/esphome-uart-p2p
+  #     type: git
+  #   components: [uart_p2p_transmitter]
+
+logger:
+  # ========================================================================
+  # LOGGING CONFIGURATION FOR RECEIVER NODE
+  # ========================================================================
+  id: logger_id
+  level: DEBUG                                            # Global log level (DEBUG provides detailed information)
+  initial_level: DEBUG                                    # Initial log level on boot
+  baud_rate: 0                                            # Disable UART logging (use USB CDC instead)
+  logs:
+    # Component-specific log level overrides (reduce noise from verbose components)
+    script: WARN                                          # ESPHome script execution logs
+    fan: WARN                                             # Fan component logs (if present)
+    number: WARN                                          # Number input component logs
+    sx1262: WARN                                          # LoRa SX1262 component logs (reduce RF noise)
+    text_sensor: WARN                                     # Text sensor logs
+    light: WARN                                           # Light component logs
+    sensor: WARN                                          # Sensor reading logs
+    switch: WARN                                          # Switch component logs
+    uart_p2p_transmitter: WARN                            # UART P2P communication logs
+    uart: WARN                                            # UART hardware logs
+    servo: WARN                                           # Servo motor logs (if present)
+select:
+  # ========================================================================
+  # RUNTIME LOG LEVEL CONTROL
+  # ========================================================================
+  # Allow dynamic log level adjustment via web interface/Home Assistant
+  - platform: logger
+    id: logger_select
+    name: Logger Level
+    entity_category: diagnostic                           # Mark as diagnostic entity in Home Assistant
+
+web_server:
+  # ========================================================================
+  # EMBEDDED WEB SERVER CONFIGURATION
+  # ========================================================================
+  port: 80                                                # Standard HTTP port
+  version: 3                                              # Web server version 3 (modern interface)
+  local: True                                             # Enable local network access only
+
+ota:
+  # ========================================================================
+  # OVER-THE-AIR UPDATE CONFIGURATION
+  # ========================================================================
+  - platform: esphome                                    # ESPHome OTA platform
+    password: !secret ota                                 # OTA password from secrets file
+
+wifi:
+  # ========================================================================
+  # WIFI CONNECTIVITY CONFIGURATION
+  # ========================================================================
+  # ========================================================================
+  # WIFI CONNECTIVITY CONFIGURATION
+  # ========================================================================
+  id: mcu_wifi                                            # WiFi component ID for status monitoring
+  ssid: !secret wifi_ssid                                 # WiFi network name (from secrets file)
+  password: !secret wifi_password4                        # WiFi password (from secrets file)
+  domain: !secret domain                                  # Network domain (from secrets file)
+  fast_connect: on                                        # Enable fast WiFi connection (skip channel scan)
+  power_save_mode: none                                   # Disable power saving for consistent connectivity
+  ap: {}                                                  # Enable access point fallback mode
+
+captive_portal:                                           # Enable captive portal for WiFi configuration
+
+# Periodic connectivity status broadcast (disabled for power conservation)
+# interval:
+#   - interval: 3min
+#     then:  
+#       - if:
+#           condition: 
+#             binary_sensor.is_off: lora_rx_activity
+#           then:
+#             # - delay: 55ms             
+#             - lambda: |-
+#                   if (!id(lora_tx_script).is_running()) {
+#                       id(lora_tx_script).execute(); 
+#                   }              
+#             - sx1262.send_packet:
+#                 data: !lambda |-                   
+#                   if (id(mcu_local_wifi).state) {
+#                     std::string s = "C:0:1";
+#                     return std::vector<uint8_t>(s.begin(), s.end());                    
+#                   } else {
+#                     std::string s = "C:0:0";
+#                     return std::vector<uint8_t>(s.begin(), s.end());
+#                   }
+
+uart:
+  # ========================================================================
+  # UART P2P COMMUNICATION CONFIGURATION
+  # ========================================================================
+  # High-speed UART for communication with slave ESP32C3 mini via USB-C to USB-C
+  # Physical connection: XIAO ESP32S3 USB-C ↔ Waveshare ESP32C3-mini USB-C
+  baud_rate: 460800                                       # High-speed baud rate (tested stable)
+                                                          # Alternative rates tested: 256000, 115200, 9600
+  # rx_buffer_size: 0                                     # Default RX buffer size (uncomment if needed)
+  
+  # CRITICAL: Crossover pin configuration for P2P communication
+  # Standard UART requires TX→RX and RX→TX crossover between devices
+  tx_pin: 20                                              # TX pin (inverted on purpose for crossover)
+  rx_pin: 19                                              # RX pin (inverted on purpose for crossover)
+  id: USB_CDC                                             # UART component ID
+  
+  # UART debugging (commented for production use)
+  # debug:
+  #   direction: BOTH                                     # Log both TX and RX data
+  #   after:
+  #     delimiter: "\n"                                   # Use newline as delimiter
+  #   sequence:
+  #     - lambda: |-
+  #           UARTDebug::log_string(direction, bytes);
+
+uart_p2p_transmitter:
+  # ========================================================================
+  # UART POINT-TO-POINT TRANSMITTER CONFIGURATION
+  # ========================================================================
+  # Forwards LoRa-received control signals to connected slave ESP32C3 via UART
+  # Protocol: Each sensor has a unique address for identification and routing
+  uart_id: USB_CDC                                        # Use USB_CDC UART for P2P communication
+  
+  # Analog sensor mappings (floating-point values)
+  sensors:
+    - sensor_id: remote_servo                             # Servo control signal (-1.0 to +1.0)
+      address: 0x01                                       # Address 0x01: Primary servo control
+    - sensor_id: remote_throttle                          # Throttle position (0.0 to 1.0)
+      address: 0x02                                       # Address 0x02: Motor throttle control
+    - sensor_id: remote_reverse                           # Reverse throttle (0.0 to 1.0)
+      address: 0x03                                       # Address 0x03: Reverse motor control
+    - sensor_id: remote_lthumby                           # Left thumb Y-axis (-1.0 to +1.0)
+      address: 0x04                                       # Address 0x04: Left analog stick Y
+    - sensor_id: remote_rthumby                           # Right thumb Y-axis (-1.0 to +1.0)
+      address: 0x05                                       # Address 0x05: Right analog stick Y
+    - sensor_id: remote_ble_hat                           # BLE hat switch (discrete values)
+      address: 0x15                                       # Address 0x15: BLE-specific hat control
+      
+  # Digital/binary sensor mappings (boolean values)
+  binary_sensors:
+    - sensor_id: lora_rx_activity                         # LoRa receive activity indicator
+      address: 0x18                                       # Address 0x18: RF activity status
+    - sensor_id: remote_mcu_wifi_state                    # Remote WiFi connectivity status
+      address: 0x06                                       # Address 0x06: Network connectivity
+      
+    # XInput controller button mappings (following Xbox controller standard)
+    # Digital buttons: 0=Released, 1=Pressed
+    - sensor_id: remote_xinput_b0                         # DPad Up
+      address: 0x07                                       # Address 0x07: Directional pad up
+    - sensor_id: remote_xinput_b1                         # DPad Down
+      address: 0x08                                       # Address 0x08: Directional pad down
+    - sensor_id: remote_xinput_b2                         # DPad Left
+      address: 0x09                                       # Address 0x09: Directional pad left
+    - sensor_id: remote_xinput_b3                         # DPad Right
+      address: 0x0A                                       # Address 0x0A: Directional pad right
+    - sensor_id: remote_xinput_b4                         # Back/Select button
+      address: 0x0B                                       # Address 0x0B: Back button
+    - sensor_id: remote_xinput_b5                         # Start button
+      address: 0x0C                                       # Address 0x0C: Start button
+    - sensor_id: remote_xinput_b6                         # Left stick button (L3)
+      address: 0x0D                                       # Address 0x0D: Left analog stick press
+    - sensor_id: remote_xinput_b7                         # Right stick button (R3)
+      address: 0x0E                                       # Address 0x0E: Right analog stick press
+    - sensor_id: remote_xinput_b8                         # Left bumper (LB)
+      address: 0x0F                                       # Address 0x0F: Left shoulder button
+    - sensor_id: remote_xinput_b9                         # Right bumper (RB)
+      address: 0x10                                       # Address 0x10: Right shoulder button
+    - sensor_id: remote_xinput_b12                        # A button
+      address: 0x11                                       # Address 0x11: A button (bottom face)
+    - sensor_id: remote_xinput_b13                        # B button
+      address: 0x12                                       # Address 0x12: B button (right face)
+    - sensor_id: remote_xinput_b14                        # X button
+      address: 0x13                                       # Address 0x13: X button (left face)
+    - sensor_id: remote_xinput_b15                        # Y button
+      address: 0x14                                       # Address 0x14: Y button (top face)
+    # - sensor_id: remote_xinput_b16                      # DEPRECATED: BLE HID Record button
+    #   address: 0x16                                     # Used locally at LRTX node only
+    - sensor_id: remote_xinput_b17                        # Additional custom button
+      address: 0x16                                       # Address 0x16: Custom function button              
+
+text_sensor:  
+  - platform: uptime
+    name: MCU UPtime
+    # web_server:
+    #   sorting_group_id: sorting_group_mcu    
+    format:
+      separator: " "
+      days: "D"          
+
+script:
+  - id: lora_tx_script
+    ## Scripts seems to result better for async states than using binary_sensor automations.....
+    mode: restart                 
+    then:
+      - lambda: !lambda |-
+          id(lora_tx_activity).publish_state(true);
+      - delay: 7s
+      - lambda: !lambda |-
+          id(lora_tx_activity).publish_state(false);
+  
+  - id: lora_rx_script
+    ## Scripts seems to result better for async states than using binary_sensor automations.....
+    mode: restart                 
+    then:
+      - lambda: !lambda |-
+          id(lora_rx_activity).publish_state(true);
+      - delay: 5.5s
+      - lambda: !lambda |-
+          id(lora_rx_activity).publish_state(false);
+
+number:
+  - platform: template
+    id: hud_servo
+    name: HUD Servo
+    icon: mdi:ship-wheel
+    optimistic: True
+    min_value: -1.000
+    max_value: 1.000
+    step: 0.1
+    initial_value: 0.000
+    restore_value: False
+    update_interval: never  
+    # on_value:
+    #       - lambda: !lambda |- 
+    #           return id(remote_servo).publish_state(x);                  
+
+  - platform: template
+    id: hud_throttle
+    name: HUD Throttle
+    restore_value: False
+    icon: mdi:sync
+    optimistic: True
+    min_value: 0
+    max_value: 1
+    step: 0.1
+    initial_value: 0
+    update_interval: never
+            
+  - platform: template
+    id: hud_reverse
+    name: HUD Reverse
+    restore_value: False
+    icon: mdi:sync
+    optimistic: True
+    min_value: 0
+    max_value: 1
+    step: 0.1
+    initial_value: 0
+    update_interval: never
+
+            
+sensor:
+############# P2P TX XINPUT AXIS ######################  
+  - platform: template
+    id: remote_servo
+    update_interval: never
+    accuracy_decimals: 3
+    on_value: 
+      then:
+        - number.set:
+            id: hud_servo
+            value: !lambda 'return x;'
+  - platform: template
+    id: remote_throttle
+    update_interval: never
+    accuracy_decimals: 3
+    on_value: 
+      then:
+        - number.set:
+            id: hud_throttle
+            value: !lambda 'return x;'    
+  - platform: template
+    id: remote_reverse
+    on_value: 
+      then:
+        - number.set:
+            id: hud_reverse
+            value: !lambda 'return x;'    
+    update_interval: never
+    accuracy_decimals: 3
+  - platform: template
+    id: remote_lthumby
+    update_interval: never
+    accuracy_decimals: 3
+  - platform: template
+    id: remote_rthumby
+    update_interval: never
+    accuracy_decimals: 3
+  - platform: template
+    id: remote_ble_hat
+    update_interval: never
+    accuracy_decimals: 0
+############# P2P TX XINPUT AXIS ######################
+
+  
+  - platform: internal_temperature
+    name: "MCU Temperature"
+    icon: mdi:thermometer-lines
+    filters:
+      - median:
+          window_size: 7
+          send_every: 7
+          send_first_at: 1    
+  
+  - platform: sx1262
+    rssi:
+      id: lora_rssi
+      name: "Lora RSSI"
+      filters:
+        - median:
+            window_size: 7
+            send_every: 7
+            send_first_at: 1       
+    snr:
+      id: lora_snr
+      name: "Lora SNR"
+      filters:
+        - median:
+            window_size: 7
+            send_every: 7
+            send_first_at: 1    
+   
+button:
+  # - platform: template
+  #   name: "Test UART Button 3"
+  #   on_press:
+  #     - uart.write: "2:33.33:44.44\r\n"
+  # - platform: template
+  #   name: "Test UART Button 4"
+  #   on_press:
+  #     - uart.write: "giberish\n"   
+  - platform: restart
+    name: 'MCU Restart'
+    id: mcu_restart
+    entity_category: diagnostic
+    icon: mdi:restart
+
+  - platform: safe_mode
+    entity_category: diagnostic
+    name: 'MCU Restart in Safe Mode'
+  
+  - platform: factory_reset
+    # disabled_by_default: True
+    entity_category: diagnostic
+    name: 'MCU Factory Reset'
+
+  - platform: template
+    id: lora_test
+    name: Lora Test
+    # icon: mdi:stop
+    entity_category: diagnostic
+    on_press:
+      then:
+        # - delay: 55ms
+        - lambda: |-
+              if (!id(lora_tx_script).is_running()) {
+                  id(lora_tx_script).execute(); 
+              }                     
+        - sx1262.send_packet:
+            data: !lambda |-                   
+              if (id(mcu_local_wifi).state) {
+                std::string s = "C:0:1";
+                return std::vector<uint8_t>(s.begin(), s.end());                    
+              } else {
+                std::string s = "C:0:0";
+                return std::vector<uint8_t>(s.begin(), s.end());
+              }
+        - delay: 60ms                  
+        - sx1262.send_packet:
+            # blocking: true
+            data: !lambda |-           
+              std::string p = ("C:1:1:" + to_string(int(id(lora_rssi).state)));                        
+              return std::vector<uint8_t>(p.begin(), p.end());                                    
+        - delay: 60ms
+        - sx1262.send_packet:
+            # blocking: true
+            data: !lambda |-           
+              std::string e = ("C:1:2:" + to_string(int(id(lora_snr).state)));                        
+              return std::vector<uint8_t>(e.begin(), e.end());   
+output:
+  - platform: ledc ###### XIAO LORA HAT LED ###########
+    id: gpio48
+    pin:
+      number: GPIO48
+      # inverted: true
+
+light:
+  - platform: monochromatic ###### XIAO LORA HAT LED ###########
+    output: gpio48
+    id: lora_led
+    effects:
+      - pulse:
+          name: "FastPulse"
+          transition_length: 0.09s
+          update_interval: 0.09s
+          min_brightness: 0%
+          max_brightness: 50%
+      - pulse:
+          name: "FastPulseHi"
+          transition_length: 0.01s
+          update_interval: 0.1s
+          min_brightness: 0%
+          max_brightness: 100%  
+      - pulse:
+          name: "SlowPulseHi"
+          transition_length: 0.01s
+          update_interval: 0.8s
+          min_brightness: 0%
+          max_brightness: 100%               
+      - pulse:
+          name: "PacePulse"
+          transition_length: 0.1s
+          update_interval: 0.9s
+          min_brightness: 0%
+          max_brightness: 50%          
+      - pulse:
+          name: "NotPulse"
+          transition_length:
+            on_length: 0.4s
+            off_length: 500ms
+      - strobe:
+
+binary_sensor:
+
+########## P2P TX #################
+  - platform: template
+    id: remote_mcu_wifi_state
+    name: Remote WIFI State
+    lambda: !lambda |-
+      if (id(remote_mcu_wifi).state) {
+        return true;
+      } else {
+        return false;
+      }    
+
+ ############# P2P TX XINPUT BUTTONS #######
+  - platform: template
+    id: remote_xinput_b0
+    filters:
+      - delayed_off: 300ms
+                         
+  - platform: template
+    id: remote_xinput_b1
+    filters:
+      - delayed_off: 300ms    
+
+  - platform: template
+    id: remote_xinput_b2  
+    #name: b2
+    filters:
+      - delayed_off: 300ms
+  - platform: template
+    id: remote_xinput_b3
+    #name: b3
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b4
+    #name: b4
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b5
+    #name: b5
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b6
+    #name: b6
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b7
+    #name: b7
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b8
+    #name: b8
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b9
+    #name: b9
+
+  - platform: template
+    id: remote_xinput_b12
+    #name: b12
+    filters:
+      - delayed_off: 300ms
+  - platform: template
+    id: remote_xinput_b13
+    #name: b13
+    filters:
+      - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b14
+    #name: b14
+  - platform: template
+    id: remote_xinput_b15
+    #name: b15
+    filters:
+      - delayed_off: 300ms    
+  # - platform: template
+  #   id: remote_xinput_b16
+  #   filters:
+  #     - delayed_off: 300ms    
+  - platform: template
+    id: remote_xinput_b17 
+    filters:
+      - delayed_off: 300ms       
+############# P2P TX XINPUT BUTTONS ######################
+
+
+
+################### Lora Activity Status  #############
+  - platform: template
+    id: lora_rx_activity
+    name: Lora RX activity
+    # publish_initial_state: True
+    entity_category: diagnostic
+    on_press:
+      then:
+        - lambda: |-  
+            id(lora_led).turn_on().set_effect("FastPulse").perform();
+    on_release: 
+      then:
+        - delay: 500ms 
+        - light.turn_off:
+            id: lora_led
+
+  - platform: template
+    id: lora_tx_activity
+    name: Lora TX activity
+    # publish_initial_state: True
+    entity_category: diagnostic
+################### Lora Activity Status  #############
+
+
+
+################### Lora push button ###################
+  # - platform: gpio
+  #   internal: True
+  #   id: lora_button
+  #   pin:
+  #     number: GPIO21
+  #     inverted: true
+  #   on_multi_click:
+  #     - timing:
+  #         - ON for 40ms to 400ms
+  #         - OFF for at least 330ms
+  #       then:
+  #         - sx1262.send_packet:
+  #             data: !lambda |-
+  #               std::string s = "PUSHBUTTON Hello World!";
+  #               id(lora_tx_activity).publish_state(true);
+  #               return std::vector<uint8_t>(s.begin(), s.end());
+
+      # - timing:
+      #     - ON for 40ms to 400ms
+      #     - OFF for 40ms to 300ms
+      #     - ON for 40ms to 400ms
+      #     - OFF for at least 330ms
+      #   then:
+      #     - delay: 20ms              
+      #     # - logger.log: "Double Clicked"
+      #     - switch.toggle: mcu_local_wifi
+
+
+      # - timing:
+      #     - ON for 40ms to 400ms
+      #     - OFF for 40ms to 300ms
+      #     - ON for 40ms to 400ms
+      #     - OFF for 40ms to 300ms
+      #     - ON for 40ms to 340ms
+
+      #   then:
+      #     # - logger.log: "Triple Clicked"                    
+      #     - button.press: mcu_restart
+      
+      # - timing:
+      #     - ON for at least 550ms
+            #   then:
+      #     - while:
+      #         condition:
+      #           binary_sensor.is_on: push_button
+      #         then:
+      #           # - logger.log: "hold1"
+      # - timing:
+      #     - ON for at least 1.5s
+      #   then:
+      #     - while:
+      #         condition:
+      #           binary_sensor.is_on: push_button
+      #         then:
+      #           # - logger.log: "hold2"
+      #           - script.stop: seg1
+      #           # - light.turn_on:
+      #           #     id: rgbw
+      #           #     color_mode: RGB_WHITE
+      #           #     red: 0%
+      #           #     green: 100%
+      #           #     blue: 0%
+      #           #     # brightness: 40%
+      #           #     color_brightness: 20%
+      #           #     white: 0%
+      #           #     # effect: "Fast Pulse"
+      #           - script.execute: seg2   
+      #           - delay: 18s ## time in ms before resend                
+      # - timing:
+      #     - ON for at least 3s
+      
+      #   then:
+      #     - while:
+      #         condition:
+      #           binary_sensor.is_on: push_button
+      #         then:
+      #           # - logger.log: "hold3"
+      #           - script.stop: seg2
+      #           # - light.turn_on:
+      #           #     id: rgbw
+      #           #     color_mode: RGB_WHITE
+      #           #     red: 0%
+      #           #     green: 100%
+      #           #     blue: 0%
+      #           #     # brightness: 40%
+      #           #     color_brightness: 20%
+      #           #     white: 0%
+      #           #     # effect: "Fast Pulse"
+      #           - script.execute: seg3   
+      #           - delay: 8s ## time in ms before resend 
+
+      # - timing:
+      #     - ON for 40ms to 400ms
+      #     - OFF for 40ms to 300ms
+      #     - ON for at least 550ms
+      #     # - OFF for at least 330ms
+      #   then:
+      #     - while:
+      #         condition:
+      #           binary_sensor.is_on: push_button
+      #         then:
+      #           # - media_player.volume_down
+      #           # - logger.log: "Double HOLD"                  
+      #           - delay: 1500ms ## time in ms before resend
+switch:
+  - platform: gpio
+    id: lora_rf
+    name: Lora RF SW1
+    pin: GPIO38
+    restore_mode: ALWAYS_ON
+    icon: mdi:wifi-strength-off-outline
+    entity_category: config
+
+  - platform: template
+    id: mcu_local_wifi
+    name: MCU Local WIFI SW
+    restore_mode: ALWAYS_ON
+    optimistic: True
+    icon: mdi:wifi-strength-off
+    entity_category: config
+    on_turn_on:
+      then:
+        - logger.log: 
+            level: INFO
+            format: "LOCAL WIFI Turned ON!!!"                    
+        - delay: 1s
+        - lambda: !lambda |-
+            wifi::global_wifi_component->enable();
+        - switch.turn_on: remote_mcu_wifi
+        - delay: 20ms
+        - sx1262.send_packet:
+            data: !lambda |-
+              id(lora_rx_script).execute();
+              std::string s = "C:0:1";
+              return std::vector<uint8_t>(s.begin(), s.end());
+                   
+    on_turn_off:
+      then:
+        - logger.log: 
+            level: INFO
+            format: "LOCAL WIFI Turned OFF!!!"        
+        - delay: 1s        
+        - lambda: !lambda |-
+            wifi::global_wifi_component->disable();
+        - switch.turn_off: remote_mcu_wifi            
+        - delay: 20ms
+        - sx1262.send_packet:
+            data: !lambda |-
+              id(lora_rx_script).execute();
+              std::string s = "C:0:0";
+              return std::vector<uint8_t>(s.begin(), s.end());
+          
+              
+
+###################################################################################
+
+  - platform: template
+    id: remote_mcu_wifi
+    name: Remote MCU WIFI
+    restore_mode: ALWAYS_ON
+    optimistic: True
+    icon: mdi:wifi-strength-off
+    entity_category: config
+    # on_turn_on:
+    #   then:
+    #     - logger.log: "RMT WIFI Turned On!!!"       
+    # on_turn_off:
+    #   then:
+    #     - logger.log: "RMT WIFI Turned Off!!!"            
+   
+
+sx1262:
+  # ========================================================================
+  # LORA SX1262 RADIO CONFIGURATION (RECEIVER NODE)
+  # ========================================================================
+  # Hardware: Seeed Studio XIAO LoRa-E5 expansion board with SX1262 transceiver
+  # Reference: https://github.com/christianhubmann/esphome_component_sx1262
+  id: lora                                                # LoRa component identifier
+  
+  # SPI pin configuration for SX1262 on XIAO LoRa expansion board
+  clk_pin: 7                                              # SPI Clock (SCK) - shared SPI bus
+  mosi_pin: 9                                             # SPI Master Out Slave In (MOSI)
+  miso_pin: 8                                             # SPI Master In Slave Out (MISO)
+  cs_pin: 41                                              # Chip Select (CS) - SX1262 device selection
+  irq_pin: 39                                             # Interrupt Request (IRQ/DIO1) - packet ready notification
+  reset_pin: 42                                           # Hardware reset pin - radio initialization
+  busy_pin: 40                                            # Busy status pin - radio operation status
+  
+  # LoRa protocol configuration
+  sync_word: 0xf7                                         # Sync word for packet identification
+                                                          # Default: 0x12, LoRaWAN public: 0x34
+                                                          # Custom: 0xf7 for private network isolation
+  
+  # Physical layer parameters (optimized for long-range, moderate data rate)
+  bandwidth: 500.0                                        # Channel bandwidth in kHz
+                                                          # Options: 125.0 (default), 250.0, 500.0
+                                                          # Higher BW = faster data rate, shorter range
+                                                          
+  frequency: 904.2                                        # Operating frequency in MHz
+                                                          # US ISM band: 902-928 MHz (chosen for Z-Wave compatibility)
+                                                          # Alternative: 869.2 MHz (EU), depends on regional regulations
+                                                          # Reference: US Z-Wave operates at 908.42/916 MHz
+                                                          
+  tx_power: -2                                            # Transmit power in dBm (-9 to +22 dBm range)
+                                                          # Lower power for receiver node (power conservation)
+                                                          # Negative values reduce interference and power consumption
+                                                          
+  # Error correction and modulation parameters
+  coding_rate: 8                                          # Forward Error Correction coding rate
+                                                          # Options: 5=4/5, 6=4/6, 7=4/7 (default), 8=4/8
+                                                          # Higher values = more error correction, lower data rate
+                                                          # CR 8 (4/8) provides maximum error resilience
+                                                          
+  preamble_length: 10                                     # Preamble length in symbols (default: 8)
+                                                          # Longer preamble improves detection at cost of overhead
+                                                          
+  spreading_factor: 8                                     # LoRa spreading factor (7-12 range)
+                                                          # Lower SF = higher data rate, shorter range
+                                                          # SF8 balances range and data rate for this application
+                                                          
+  data_rate: 80MHz                                        # SPI communication data rate with SX1262
+                                                          # Options: 1kHz to 80MHz, higher = faster SPI communication
+                                                          # Not related to LoRa air data rate
+  
+  # LoRa air data rate calculation:
+  # Data Rate = SF × BW / (2^SF × CR_factor)
+  # With SF8, BW=500kHz, CR=4/8: ~15.6 kbps theoretical maximum
+  # Actual payload throughput lower due to headers and protocol overhead
+  on_packet_receive:
+    # - logger.log:
+    #     level: DEBUG
+    #     format: "Received message: %s"
+    #     args: [ 'std::string(data.begin(), data.end()).c_str()' ]        
+    # - lambda: |-
+    #     //debugging
+    #     //std::string dstream(data.begin(), data.end());
+    #     //id(lora_downstream).publish_state(dstream.c_str());    
+    - lambda: |-
+          //if (!id(lora_rx_script).is_running()) {
+          id(lora_rx_script).execute(); 
+          //}    
+    - lambda: |-
+        //DECODE incoming LORA to ASCII
+        std::string dstream(data.begin(), data.end());
+        // Map patterns to their corresponding actions
+        struct PatternAction {
+          int offset;
+          std::function<void(const std::string&)> action;
+        };
+        const std::map<std::string, PatternAction> pattern_map = {
+          {"A:1:", {4, [](const std::string& s){ id(remote_reverse).publish_state(atof(s.c_str())); }}},
+          {"A:2:", {4, [](const std::string& s){ id(remote_throttle).publish_state(atof(s.c_str())); }}},
+          {"A:5:", {4, [](const std::string& s){ id(remote_servo).publish_state(atof(s.c_str())); }}},
+          {"A:3:", {4, [](const std::string& s){ id(remote_servo).publish_state(atof(s.c_str())); }}},          
+          //{"B:0:", {4, [](const std::string& s){ id(remote_xinput_b0).publish_state(atof(s.c_str())); }}},
+          //{"B:1:", {4, [](const std::string& s){ id(remote_xinput_b1).publish_state(atof(s.c_str())); }}},
+          //{"B:2:", {4, [](const std::string& s){ id(remote_xinput_b2).publish_state(atof(s.c_str())); }}},
+          //{"B:3:", {4, [](const std::string& s){ id(remote_xinput_b3).publish_state(atof(s.c_str())); }}},
+          //{"B:4:", {4, [](const std::string& s){ id(remote_xinput_b4).publish_state(atof(s.c_str())); }}},
+          //{"B:5:", {4, [](const std::string& s){ id(remote_xinput_b5).publish_state(atof(s.c_str())); }}},
+          //{"B:6:", {4, [](const std::string& s){ id(remote_xinput_b6).publish_state(atof(s.c_str())); }}},
+          //{"B:7:", {4, [](const std::string& s){ id(remote_xinput_b7).publish_state(atof(s.c_str())); }}},
+          //{"B:8:", {4, [](const std::string& s){ id(remote_xinput_b8).publish_state(atof(s.c_str())); }}},
+          //{"B:9:", {4, [](const std::string& s){ id(remote_xinput_b9).publish_state(atof(s.c_str())); }}},
+          //{"B:12:", {5, [](const std::string& s){ id(remote_xinput_b12).publish_state(atof(s.c_str())); }}},
+          //{"B:13:", {5, [](const std::string& s){ id(remote_xinput_b13).publish_state(atof(s.c_str())); }}},
+          //{"B:14:", {5, [](const std::string& s){ id(remote_xinput_b14).publish_state(atof(s.c_str())); }}},
+          //{"B:15:", {5, [](const std::string& s){ id(remote_xinput_b15).publish_state(atof(s.c_str())); }}},
+          //{"B:16:", {5, [](const std::string& s){ id(remote_ble_hat).publish_state(atof(s.c_str())); }}},
+          //{"B:17:", {5, [](const std::string& s){ id(remote_xinput_b16).publish_state(atof(s.c_str())); }}}
+          {"C:0:", {4, [](const std::string& s){ id(mcu_local_wifi).publish_state(atof(s.c_str())); }}},
+        };
+        for (const auto& [pat, act] : pattern_map) {
+          auto pos = dstream.find(pat);
+          if (pos != std::string::npos) {
+            std::string modified = dstream.substr(pos + act.offset);
+            act.action(modified);
+            break;
+          }
+        } 
+    - lambda: |-
+        // Binary decode: first byte = sensor_id, next bytes = value
+        if (data.size() >= 2) {
+          uint8_t sensor_id = data[0];
+          // Example: float value (4 bytes)
+          if (data.size() == 5) {
+            float value;
+            memcpy(&value, &data[1], 4);
+            switch (sensor_id) {
+              case 0x01: id(remote_reverse).publish_state(value); break;
+              case 0x02: id(remote_throttle).publish_state(value); break;
+              case 0x03: id(remote_servo).publish_state(value); break;
+              case 0x04: id(remote_lthumby).publish_state(value); break;
+              case 0x05: id(remote_servo).publish_state(value); break;              
+              case 0x06: id(remote_rthumby).publish_state(value); break;
+              // ...add more as needed
+            }
+          }
+          // Button/boolean (1 byte value)
+          else if (data.size() == 2) {
+            uint8_t button_val = data[1];
+            switch (sensor_id) {
+              case 0x0: id(remote_xinput_b0).publish_state(button_val); break;  // DPad Up
+              case 0x1: id(remote_xinput_b1).publish_state(button_val); break;  // DPad Down
+              case 0x2: id(remote_xinput_b2).publish_state(button_val); break;  // DPad Left
+              case 0x3: id(remote_xinput_b3).publish_state(button_val); break;  // DPad Right
+              case 0x4: id(remote_xinput_b4).publish_state(button_val); break;  // Back
+              case 0x5: id(remote_xinput_b5).publish_state(button_val); break;  // Start
+              case 0x6: id(remote_xinput_b6).publish_state(button_val); break;  // Left Stick
+              case 0x7: id(remote_xinput_b7).publish_state(button_val); break;  // Right Stick
+              case 0x8: id(remote_xinput_b8).publish_state(button_val); break;  // LB
+              case 0x9: id(remote_xinput_b9).publish_state(button_val); break;  // RB
+              case 0xC: id(remote_xinput_b12).publish_state(button_val); break; // A
+              case 0xD: id(remote_xinput_b13).publish_state(button_val); break; // B
+              case 0xE: id(remote_xinput_b14).publish_state(button_val); break; // X
+              case 0xF: id(remote_xinput_b15).publish_state(button_val); break; // Y
+              //case 0x20: id(remote_xinput_b16).publish_state(button_val); break; 
+              case 0x10: id(remote_ble_hat).publish_state(button_val); break; // BLE (Only) Hat Switch
+              //case 0x11: id(remote_xinput_b17).publish_state(button_val); break;  //DEPRECATED Record
+              // ...add more as needed
+            }
+          }
+        }
+
+    # # UART XINPUT mapping:
+## | Number | 	Button    
+## |--------|--------------
+## | A             | B:12     
+## | B             | B:13     
+## | X             | B:14     
+## | Y             | B:15
+## | Record        | B:17 Used locally only
+## | LB            | B:8      
+## | RB  		       | B:9      
+## | Back          | B:4      
+## | Start         | B:5      
+## | Left Stick    | B:6      
+## | Right Stick   | B:7      
+## | DPad Up       | B:0
+## | DPad Down     | B:1
+## | DPad Left     | B:2
+## | DPad Right	   | B:3
+## | left_trigger  | A:1
+## | right_trigger | A:2
+## | l_thumb_x     | A:3
+## | l_thumb_y     | A:4
+## | r_thumb_x     | A:5
+## | r_thumb_y     | A:6
+############ From LRTX UART XINPUT SEND to REMOTE NUMBER to upstream to uart_p2p_transmitter targetting esp slave ###################
+                                       
+    - if: ##received a ping signal from counterpart, send back telemetry message with local LORA RSSI + SNR ##
+        condition:
+          - lambda: |-
+              std::string str = std::string(data.begin(), data.end()).c_str();
+              std::string substr = "C:1:0";
+              return (str.find(substr) != std::string::npos);
+        then:
+          - lambda: |-
+                if (!id(lora_tx_script).is_running()) {
+                    id(lora_tx_script).execute(); 
+                }            
+          - sx1262.send_packet:
+              # blocking: true
+              data: !lambda |-           
+                std::string p = ("C:1:1:" + to_string(int(id(lora_rssi).state)));                        
+                return std::vector<uint8_t>(p.begin(), p.end());                                 
+          - delay: 60ms
+          - sx1262.send_packet:
+              # blocking: true
+              data: !lambda |-           
+                std::string e = ("C:1:2:" + to_string(int(id(lora_snr).state)));                        
+                return std::vector<uint8_t>(e.begin(), e.end());

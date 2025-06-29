@@ -1,0 +1,548 @@
+esphome:
+  name: l0r430t-514v31
+  friendly_name: 514v31
+  comment: LoRaBot Slave Node - Secondary processor for sensor data and actuator control
+  project:
+    name: "ManRiver.L0R430T"
+    version: "1.0.0"  
+  platformio_options:
+    build_flags:
+      # Hardware-specific definitions for ESP32-C3 (RISC-V architecture)
+      # CRITICAL: USB Serial/JTAG configuration for ESP32-C3 mini compatibility
+      - '-UARDUINO_USB_SERIAL_JTAG_ON_BOOT'               # Disable conflicting USB Serial/JTAG on boot
+                                                          # Required for P2P component over XIAO ESP32S3 connection
+                                                          # Prevents boot conflicts with dual USB-C setup
+      - '-DCORE_DEBUG_LEVEL=0'                            # Debug levels: 0=None, 1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose
+      - '-DCONFIG_ARDUHAL_LOG_COLORS'                     # Enable colored logging output for easier debugging
+      
+    # ESP32-C3 specific hardware configuration
+    board_build.mcu: esp32c3                              # MCU type: ESP32-C3 (single-core RISC-V)
+    board_build.variant: esp32c3                          # ESP32-C3 variant specification
+    board_build.flash_mode: dio                           # Dual I/O flash mode (compatible with most ESP32-C3)
+    
+    # CPU frequency optimization (balanced for slave node workload)
+    # board_build.f_cpu: 160000000L                       # High performance mode (160MHz) - tested stable
+    board_build.f_cpu: 80000000L                          # Power saving mode (80MHz) - prevents P2P contention
+                                                          # Lower frequency reduces backpressure contention under heavy load
+                                                          # 160MHz showed contention issues with P2P communication
+  on_boot:
+    # ========================================================================
+    # SLAVE NODE INITIALIZATION SEQUENCE
+    # ========================================================================
+    # Priority -100: Execute after sensor setup, before WiFi initialization
+    # Visual indication sequence for successful slave node boot
+    - priority: -100.0 
+      then:
+        # RGB LED rainbow effect indicates successful initialization
+        - light.turn_on:
+            id: rgb
+            effect: rainbow                               # Rainbow effect provides visual boot confirmation
+        - delay: 10s                                      # Display rainbow for 10 seconds
+        - light.turn_off:
+            id: rgb                                       # Turn off LED to conserve power
+                     
+esp32:
+  board: esp32-c3-devkitm-1                               # ESP32-C3 DevKit M-1 board definition
+  framework:
+    type: esp-idf                                         # ESP-IDF framework for advanced features
+    version: latest                                       # Use latest stable ESP-IDF version
+    sdkconfig_options:
+      # BLE configuration (commented - not currently used)
+      # CONFIG_BT_BLE_50_FEATURES_SUPPORTED: y           # Bluetooth 5.0 features
+      # CONFIG_BT_BLE_42_FEATURES_SUPPORTED: y           # Bluetooth 4.2 features
+      # CONFIG_ESP_TASK_WDT_TIMEOUT_S: "8"               # Watchdog timeout extension
+      
+      # Flash and memory optimization for ESP32-C3
+      CONFIG_ESPTOOLPY_FLASHSIZE_4MB: y                   # 4MB flash size configuration
+      COMPILER_OPTIMIZATION_SIZE: y                       # Optimize for code size (important for 4MB flash)
+      CONFIG_FREERTOS_UNICORE: y                          # Enable unicore mode (ESP32-C3 is single-core)
+
+external_components:
+  - source:
+      type: local
+      path: components  
+  # - source:
+  #     url: https://github.com/KG3RK3N/esphome-uart-p2p
+  #     type: git
+  #   components: [uart_p2p_receiver]
+# esp32_ble_beacon:
+#   type: iBeacon
+#   uuid: '8579e30a-64b8-46ce-b3b9-080ac5ab1169'
+#   major: 3838 #(Optional, int): The iBeacon major identifier of this beacon. Usually used to group beacons, for example for grouping all beacons in the same building, but has no effect if the BLE receiver doesn’t use it. Defaults to 10167.
+#   minor: 4949 #(Optional, int): The iBeacon minor identifier of this beacon. Usually used to identify beacons within an iBeacon group. Defaults to 61958.
+#   min_interval: 2000ms #(Optional, Time): The iBeacon minimum transmit interval in milliseconds from 20 to 10240. Setting this less than max_interval gives the BLE hardware a better chance to avoid collisions with other BLE transmissions. Defaults to the iBeacon specification’s defined interval: 100ms.
+#   max_interval: 2100ms #(Optional, Time): The iBeacon maximum transmit interval in milliseconds from 20 to 10240. Setting this greater than min_interval gives the BLE hardware a better chance to avoid collisions with other BLE transmissions. Defaults to the iBeacon specification’s defined interval: 100ms.
+#   measured_power: -59 #(Optional, int): The RSSI of the iBeacon as measured 1 meter from the device. This is used to calibrate the ranging calculations in iOS. The procedure for setting this value can be found in Apple’s Getting Started with iBeacon PDF under the heading Calibrating iBeacon. Between -128 to 0. Defaults to -59.
+#   tx_power: -6  #(Optional, int): The transmit power of the iBeacon in dBm. One of -12, -9, -6, -3, 0, 3, 6, 9. Defaults to ``3dBm``.
+web_server:
+  port: 80
+  version: 3
+  local: True
+logger:
+  id: logger_id
+  level: debug
+  initial_level: debug
+  baud_rate: 0
+  logs:
+    text_sensor: WARN
+    fan: WARN
+    switch: WARN
+    sensor: WARN
+    number: WARN
+    uart_p2p_receiver: WARN
+    servo: WARN
+
+select:
+  - platform: logger
+    id: logger_select
+    name: Logger Level
+    entity_category: diagnostic
+ota:
+  - platform: esphome
+    password: !secret ota
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password4
+  domain: !secret domain 
+  fast_connect: on
+  # power_save_mode: LIGHT
+  ap: {}
+captive_portal:
+button:
+  # ========================================================================
+  # SYSTEM CONTROL BUTTONS
+  # ========================================================================
+  # Debug UART test buttons (commented for production use)
+  # - platform: template                                 # Debug button for UART testing
+  #   name: "Test UART Button 3"
+  #   on_press:
+  #     - uart.write: "2:33.33:44.44\r\n"               # Send test data packet
+  # - platform: template
+  #   name: "Test UART Button 4"
+  #   on_press:
+  #     - uart.write: "giberish\n"                       # Send invalid data for testing
+   
+  - platform: restart                                    # System restart button
+    name: 'MCU Restart'
+    id: mcu_restart
+    entity_category: diagnostic                           # Mark as diagnostic in Home Assistant
+    icon: mdi:restart
+
+  - platform: safe_mode                                  # Safe mode restart (recovery mode)
+    entity_category: diagnostic
+    name: 'MCU Restart Safe Mode'
+  
+  - platform: factory_reset                              # Factory reset button
+    # disabled_by_default: True                          # Uncomment to hide by default
+    entity_category: diagnostic
+    name: 'MCU Factory Reset'
+
+text_sensor:  
+  # ========================================================================
+  # SYSTEM STATUS TEXT SENSORS
+  # ========================================================================
+  - platform: uptime                                     # System uptime display
+    name: MCU UPtime
+    # web_server:                                         # Optional web server grouping
+    #   sorting_group_id: sorting_group_mcu    
+    format:
+      separator: " "                                      # Space separator for uptime format
+      days: "D"                                           # Days abbreviation
+
+sensor:
+  # ========================================================================
+  # HARDWARE MONITORING SENSORS
+  # ========================================================================
+  - platform: internal_temperature                       # ESP32-C3 internal temperature sensor
+    name: "MCU Temperature"
+    id: mcu_temperature
+    icon: mdi:thermometer-lines
+    # web_server:                                         # Optional web server grouping
+    #   sorting_group_id: sorting_group_mcu    
+    filters:    
+      - median:                                           # Median filter for temperature stability
+          window_size: 10                                 # 10-sample moving median
+          send_every: 15                                  # Update every 15 samples (noise reduction)
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    is_rgbw: False
+    #max_refresh_rate: 3ms
+    pin: GPIO10
+    num_leds: 1
+    # rmt_channel: 1
+    chipset: WS2812
+    # name: RGB Led
+    id: rgb
+    icon: mdi:led-strip
+    effects:
+      - addressable_rainbow:
+          name: "rainbow"
+          speed: 8
+          width: 0
+      - strobe:
+          name: "strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 500ms
+            - state: false
+              duration: 250ms
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 500ms
+      - pulse:
+          name: "pacePulse"
+          transition_length: 0.1s
+          update_interval: 0.9s
+          min_brightness: 0%
+          max_brightness: 50% 
+      - pulse:
+          name: "fastPulse"
+          transition_length: 0.09s
+          update_interval: 0.09s
+          min_brightness: 0%
+          max_brightness: 50%    
+
+switch:
+  # ========================================================================
+  # MOTOR CONTROLLER DIRECTION SWITCHES
+  # ========================================================================
+  # H-bridge motor controller using AIN1/AIN2 for directional control
+  # CRITICAL: Only one direction should be active at a time to prevent short circuit
+  
+  - platform: gpio                                       # Forward direction control
+    pin: GPIO7                                            # AIN1 pin - forward direction signal
+    name: AIN1 Forward
+    id: ain1
+    restore_mode: ALWAYS_OFF                              # Always start in OFF state for safety
+    on_turn_on:
+      then:
+        - delay: 1s                                       # 1-second safety delay
+        - switch.turn_off: ain2                           # CRITICAL: Ensure reverse is OFF to prevent H-bridge short
+
+  - platform: gpio                                       # Reverse direction control
+    pin: GPIO8                                            # AIN2 pin - reverse direction signal
+    name: AIN2 Reverse
+    id: ain2
+    restore_mode: ALWAYS_OFF                              # Always start in OFF state for safety
+    on_turn_on:
+      then:
+        - delay: 1s                                       # 1-second safety delay
+        - switch.turn_off: ain1                           # CRITICAL: Ensure forward is OFF to prevent H-bridge short
+  
+  # ========================================================================
+  # WIFI CONTROL SWITCH
+  # ========================================================================
+  - platform: template                                   # Software WiFi enable/disable control
+    id: mcu_local_wifi
+    name: MCU Local WIFI
+    restore_mode: ALWAYS_ON                               # Default WiFi enabled on boot
+    optimistic: True                                      # Local state management
+    icon: mdi:wifi-strength-off
+    entity_category: config                               # Configuration entity in Home Assistant
+    on_turn_on:
+      then:
+        - logger.log: 
+            level: INFO
+            format: "LOCAL WIFI Turned ON!!!"          
+        - delay: 1s            
+        - lambda: !lambda |-
+            wifi::global_wifi_component->enable();       # Enable WiFi component
+
+    on_turn_off:
+      then:
+        - logger.log: 
+            level: INFO
+            format: "LOCAL WIFI Turned OFF!!!"          
+        - delay: 1s            
+        - lambda: !lambda |-
+            wifi::global_wifi_component->disable();      # Disable WiFi component for power saving
+
+output: 
+  # ========================================================================
+  # PWM OUTPUT CONFIGURATION
+  # ========================================================================
+  # LEDC (LED Controller) used for precise PWM generation
+  
+  - platform: ledc                                       # Motor speed control PWM output
+    pin: GPIO6                                            # PWM output pin for motor controller
+    id: gpio6 
+    frequency: 50Hz                                       # 50Hz PWM frequency (standard for motor control)
+    # min_power: 0.2                                      # Minimum power threshold (commented)
+    zero_means_zero: True                                 # PWM 0% = completely off (no residual signal)
+
+  - platform: ledc                                       # Servo control PWM output
+    pin: GPIO4                                            # PWM output pin for servo motor
+    id: gpio4
+    frequency: 50Hz                                       # 50Hz PWM frequency (standard for servo control)
+    zero_means_zero: True                                 # PWM 0% = servo center position
+
+fan: 
+  # ========================================================================
+  # MOTOR SPEED CONTROLLER (using Fan platform for PWM control)
+  # ========================================================================
+  # ESPHome Fan platform provides convenient speed control interface
+  # for PWM-based motor speed controllers
+  
+  - platform: speed                                      # Variable speed fan/motor control
+    output: gpio6                                         # Use GPIO6 PWM output
+    # name: "Speed AK1"                                   # Optional name (commented for internal use)
+    id: ak1speed                                          # Internal component ID
+    restore_mode: ALWAYS_OFF                              # Always start motor stopped for safety
+
+servo: 
+  # ========================================================================
+  # SERVO MOTOR CONFIGURATION
+  # ========================================================================
+  # Standard PWM servo control (1-2ms pulse width, 50Hz frequency)
+  
+  - id: servo1                                            # Primary servo motor
+    output: gpio4                                         # Use GPIO4 PWM output
+    auto_detach_time: 1s                                  # Auto-detach after 1s of inactivity (power saving)
+    transition_length: 0.9s                               # Smooth transition time for position changes
+
+number:
+  - platform: template
+    id: local_servo
+    name: HUD Servo
+    icon: mdi:ship-wheel
+    optimistic: True
+    min_value: -1
+    max_value: 1
+    step: 0.1
+    initial_value: 0
+    restore_value: False
+    update_interval: never
+    on_value: 
+        - lambda: |-
+           id(servo1).write(x*10);
+ 
+  - platform: template
+    id: local_throttle
+    name: HUD Throttle
+    restore_value: False
+    icon: mdi:sync
+    optimistic: True
+    min_value: 0
+    max_value: 1
+    step: 0.1
+    initial_value: 0
+    update_interval: never
+    on_value:         
+        - lambda: |-
+            id(ain2).turn_off();
+            id(ain1).turn_on();
+            auto call = id(ak1speed).turn_on();
+            call.set_speed(x * 100);
+            call.perform();
+
+  - platform: template
+    id: local_reverse
+    name: local Reverse
+    restore_value: False
+    icon: mdi:sync
+    optimistic: True
+    min_value: 0
+    max_value: 1
+    step: 0.1
+    initial_value: 0
+    update_interval: never
+    on_value:
+      then:      
+        - lambda: |-
+            id(ain1).turn_off();
+            id(ain2).turn_on();
+            auto call = id(ak1speed).turn_on();
+            call.set_speed(x * 100);
+            call.perform();
+
+uart:
+  # ========================================================================
+  # UART P2P COMMUNICATION CONFIGURATION
+  # ========================================================================
+  # High-speed UART for receiving control data from XIAO ESP32S3
+  # Physical connection: ESP32C3-mini USB-C ↔ XIAO ESP32S3 USB-C (crossover)
+  baud_rate: 460800                                       # High-speed baud rate (tested stable)
+                                                          # Alternative tested rates: 256000, 115200
+  # baud_rate: 256000                                     # Alternative lower speed option
+  # baud_rate: 115200                                     # Standard speed option
+  
+  # Pin configuration for USB-C to USB-C connection
+  tx_pin: 18                                              # TX pin (ESP32-C3 GPIO18)
+  rx_pin: 19                                              # RX pin (ESP32-C3 GPIO19)
+  # id: usb_uart                                          # Alternative UART ID
+  id: USB_SERIAL_JTAG                                     # Use USB Serial/JTAG interface
+  # rx_buffer_size:                                       # Default buffer size (don't change - affects boot)
+
+uart_p2p_receiver:
+  # ========================================================================
+  # UART POINT-TO-POINT RECEIVER CONFIGURATION
+  # ========================================================================
+  # Receives control signals from LRRX node and converts to local actuator commands
+  # Protocol: Each sensor mapped to unique address for proper routing
+  
+  # uart_id: usb_uart                                     # Alternative UART reference
+  uart_id: USB_SERIAL_JTAG                                # Use USB Serial/JTAG UART
+  
+  # Analog sensor mappings (floating-point control values)
+  sensors:
+    - id: remote_servo                                    # Remote servo position command
+      accuracy_decimals: 3                                # 3 decimal places precision
+      address: 0x01                                       # Address 0x01: Servo control signal
+      on_value:
+        then:
+          # Convert received float to local servo control
+          - lambda: |-
+              float floatValue = x;                       # Received servo position (-1.0 to +1.0)
+              std::string str = std::to_string(floatValue); 
+              const char* charPtr = str.c_str();
+              auto call = id(local_servo).make_call();    # Update local servo number component
+              call.set_value(atof(charPtr));
+              call.perform();
+              
+    - id: remote_throttle                                 # Remote throttle command
+      accuracy_decimals: 3                                # 3 decimal places precision
+      address: 0x02                                       # Address 0x02: Forward throttle control
+      on_value:
+        then:
+          # Convert received float to motor speed control
+          - lambda: |-                                   
+              float floatValue = x;                       # Received throttle value (0.0 to 1.0)
+              std::string str = std::to_string(floatValue);
+              const char* charPtr = str.c_str();
+              auto call = id(local_throttle).make_call(); # Update local throttle number component
+              call.set_value(atof(charPtr));
+              call.perform();
+              
+    - id: remote_reverse                                  # Remote reverse throttle command
+      accuracy_decimals: 3                                # 3 decimal places precision
+      address: 0x03                                       # Address 0x03: Reverse throttle control
+      on_value:
+        then:
+          # Convert received float to reverse motor control
+          - lambda: |-
+              float floatValue = x;                       # Received reverse value (0.0 to 1.0)
+              std::string str = std::to_string(floatValue);
+              const char* charPtr = str.c_str();
+              auto call = id(local_reverse).make_call();  # Update local reverse number component
+              call.set_value(atof(charPtr));
+              call.perform();
+              
+    - id: remote_lthumby                                  # Left thumb Y-axis (analog stick)
+      accuracy_decimals: 3                                # 3 decimal places precision
+      address: 0x04                                       # Address 0x04: Left analog stick Y
+
+    - id: remote_rthumby                                  # Right thumb Y-axis (analog stick)
+      accuracy_decimals: 3                                # 3 decimal places precision
+      address: 0x05                                       # Address 0x05: Right analog stick Y
+
+    - id: remote_ble_hat                                  # BLE hat switch from LRTX node
+      name: xDPAD(BLE)                                    # BLE-specific directional control
+      accuracy_decimals: 0                                # Integer values only
+      address: 0x15                                       # Address 0x15: BLE hat switch (from B:16 at LRTX)
+                  
+  # Digital/binary sensor mappings (boolean control signals)
+  binary_sensors:
+    - id: lora_rx_activity                                # LoRa receive activity indicator
+      name: Incoming Control Stream                       # Activity status from radio link
+      address: 0x18                                       # Address 0x18: RF activity status
+      on_press:
+        then:
+          # Visual feedback for active control stream
+          - light.turn_on:
+              id: rgb                                     # Turn on RGB LED
+              red: 0%                                     # Green color indicates active reception
+              green: 100%
+              blue: 0%
+              effect: fastPulse                           # Fast pulse effect for activity
+      # Auto-timeout safety feature (commented - handled by P2P component)
+      #     - delay: 10s     
+      #     - lambda: |-
+      #         id(ain2).turn_off();                     # Emergency stop motors
+      #         id(ain1).turn_off();          
+      #         id(servo1).write(0);                      # Center servo
+      on_release:
+        then:
+          - delay: 500ms                                  # Brief delay before LED off
+          - light.turn_off:
+              id: rgb        
+
+    - id: remote_mcu_wifi_state                           # Remote WiFi status synchronization
+      address: 0x06                                       # Address 0x06: Network connectivity status
+      on_press:
+        then:
+            - switch.turn_on: mcu_local_wifi              # Enable local WiFi when remote is connected
+      on_release:
+        then:
+            - switch.turn_off: mcu_local_wifi             # Disable local WiFi when remote disconnects
+            
+    # XInput controller button mappings (Xbox controller standard)
+    # All buttons use delayed_off filters at receiver node for debouncing
+    - id: remote_xinput_b0                                # DPad Up
+      name: xDpadUP
+      address: 0x07                                       # Address 0x07: Directional pad up
+    
+    - id: remote_xinput_b1                                # DPad Down
+      name: xDpadDown
+      address: 0x08                                       # Address 0x08: Directional pad down
+    
+    - id: remote_xinput_b2                                # DPad Left
+      name: xDpadLeft
+      address: 0x09                                       # Address 0x09: Directional pad left
+    
+    - id: remote_xinput_b3                                # DPad Right
+      name: xDpadRight
+      address: 0x0A                                       # Address 0x0A: Directional pad right
+      
+    - id: remote_xinput_b4                                # Back/Select button
+      name: xBack
+      address: 0x0B                                       # Address 0x0B: Back button
+      
+    - id: remote_xinput_b5                                # Start button
+      name: xStart
+      address: 0x0C                                       # Address 0x0C: Start button
+     
+    - id: remote_xinput_b6                                # Left stick button (L3)
+      name: xLeftStick
+      address: 0x0D                                       # Address 0x0D: Left analog stick press
+    
+    - id: remote_xinput_b7                                # Right stick button (R3)
+      name: xRightStick
+      address: 0x0E                                       # Address 0x0E: Right analog stick press
+    
+    - id: remote_xinput_b8                                # Left bumper (LB)
+      name: xLB
+      address: 0x0F                                       # Address 0x0F: Left shoulder button
+    
+    - id: remote_xinput_b9                                # Right bumper (RB)
+      name: xRB
+      address: 0x10                                       # Address 0x10: Right shoulder button
+     
+    - id: remote_xinput_b12                               # A button
+      name: xA
+      address: 0x11                                       # Address 0x11: A button (bottom face)
+     
+    - id: remote_xinput_b13                               # B button
+      name: xB
+      address: 0x12                                       # Address 0x12: B button (right face)
+    
+    - id: remote_xinput_b14                               # X button
+      address: 0x13                                       # Address 0x13: X button (left face)
+      name: xX   
+    
+    - id: remote_xinput_b15                               # Y button
+      address: 0x14                                       # Address 0x14: Y button (top face)
+      name: xY
+
+    # Record button (commented - used locally at LRTX only)
+    # - id: remote_xinput_b16                             # Record button (deprecated for remote use)
+    #   address: 0x16
+    #   name: xRecord
+      

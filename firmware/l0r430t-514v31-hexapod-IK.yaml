@@ -1,0 +1,2662 @@
+esphome:
+  name: l0r430t-514v31-hp
+  friendly_name: 514v31-hexapod
+  comment: LoraBot SLAVE1, based on Freenove HEXAPOD kit (LRRX surrogate)
+  platformio_options:
+    build_flags:
+      - '-UARDUINO_USB_SERIAL_JTAG_ON_BOOT' ##made it work on esp32c3-mini with P2P component over XIAO esp32s3.
+      - '-DCORE_DEBUG_LEVEL=0'        ##   ; 0 None, 1 Error, 2 Warn, 3 Info, 4 Debug, 5 Verbose
+      - '-DCONFIG_ARDUHAL_LOG_COLORS'      
+    board_build.mcu: esp32c3
+    board_build.variant: esp32c3
+    board_build.flash_mode: dio    
+    board_build.f_cpu: 160000000L #-> tested
+    # board_build.f_cpu: 80000000L ### seem to cause overflow to P2P when under heavy load. 160Mhz seems more up to snuf.
+  on_boot:
+   - priority: -200.0 # after sensor setup, before WIFI initialization 
+     then:
+      - light.turn_on:
+         id: rgb
+         effect: rainbow
+      # Play startup sound (optional)
+      - select.set:
+          id: rtttl_player
+          option: "two_short"   
+      # Return all legs to neutral
+      # - button.press: retract
+      - delay: 8s
+      # - button.press: cal_kal
+      - light.turn_off:
+         id: rgb
+
+                   
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+    version: latest
+    sdkconfig_options:
+      # CONFIG_BT_BLE_50_FEATURES_SUPPORTED: y
+      # CONFIG_BT_BLE_42_FEATURES_SUPPORTED: y
+      # CONFIG_ESP_TASK_WDT_TIMEOUT_S: "8"
+      CONFIG_ESPTOOLPY_FLASHSIZE_4MB: y
+      COMPILER_OPTIMIZATION_SIZE: y
+      CONFIG_FREERTOS_UNICORE: y
+
+external_components:
+  - source:
+      type: local
+      path: components  
+  # - source:
+  #     url: https://github.com/KG3RK3N/esphome-uart-p2p
+  #     type: git
+  #   components: [uart_p2p_receiver]
+
+web_server:
+  port: 80
+  version: 3
+  local: True
+  sorting_groups:
+    - id: sorting_group_robotcontrol
+      name: "R030tC0ntr01"
+      sorting_weight: 10
+    - id: sorting_group_servocontrol
+      name: "$3rV0C0ntr01"
+      sorting_weight: 20
+    - id: sorting_group_mcu
+      name: "MCU"
+      sorting_weight: 40   
+
+logger:
+  id: logger_id
+  level: debug
+  initial_level: WARN
+  baud_rate: 0
+  logs:
+    text_sensor: WARN
+    switch: WARN
+    sensor: WARN
+    light: WARN
+    ultrasonic.sensor: NONE
+    number: WARN
+    uart_p2p_receiver: WARN
+    servo: WARN
+    mpu6050: WARN
+
+api:
+  encryption:
+    key: !secret api
+  reboot_timeout: 0s 
+    
+ota:
+  - platform: esphome
+    password: !secret ota
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password4
+  domain: !secret domain 
+  fast_connect: on
+  # power_save_mode: LIGHT
+  ap: {}
+captive_portal:
+
+i2c:
+  - id: fns_i2c
+    sda: GPIO4 # I2C SDA (Freenove Shield GPIO2)
+    scl: GPIO5 # I2C SCL (Freenove Shield GPIO3)
+    scan: True
+    frequency: 400kHz
+
+globals:
+  # Kalman filter and orientation globals
+  - id: kalman_pitch
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: kalman_roll
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: pitch_offset
+    type: float
+    restore_value: yes
+    initial_value: '0'
+  - id: roll_offset
+    type: float
+    restore_value: yes
+    initial_value: '0'
+  - id: yaw_estimate
+    type: float
+    restore_value: yes
+    initial_value: '0'
+    
+  # PID Controller globals for stability (based on Freenove implementation)
+  - id: pitch_pid_output
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: roll_pid_output
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: pitch_error_integral
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: roll_error_integral
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: pitch_error_previous
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: roll_error_previous
+    type: float
+    restore_value: no
+    initial_value: '0'
+  
+  # Inverse Kinematics globals - Freenove leg geometry (l1=33, l2=90, l3=110)
+  - id: coxa_length
+    type: float
+    restore_value: yes
+    initial_value: '33.0'  # mm - Freenove coxa length
+  - id: femur_length
+    type: float
+    restore_value: yes
+    initial_value: '90.0'  # mm - Freenove femur length
+  - id: tibia_length
+    type: float
+    restore_value: yes
+    initial_value: '110.0'  # mm - Freenove tibia length
+  
+  # Body control and stability
+  - id: stability_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: target_body_height
+    type: float
+    restore_value: yes
+    initial_value: '-25.0'  # mm - Freenove default height
+  - id: body_x_offset
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: body_y_offset
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: body_z_offset
+    type: float
+    restore_value: no
+    initial_value: '0'
+    
+  # Standby power management globals
+  - id: last_activity_time
+    type: unsigned long
+    restore_value: no
+    initial_value: '0'
+  - id: standby_timeout_minutes
+    type: int
+    restore_value: yes
+    initial_value: '5'  # Default 5 minutes until standby
+  - id: is_in_standby
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: standby_servo_positions
+    type: bool
+    restore_value: yes
+    initial_value: 'true'  # Save servo positions when entering standby
+    
+  # IK Servo Scaling Configuration - CONSERVATIVE SCALING to prevent damage
+  - id: servo_scale_factor
+    type: float
+    restore_value: yes
+    initial_value: '0.5'    # VERY CONSERVATIVE: 0.5 units per degree
+  - id: servo_max_angle
+    type: float
+    restore_value: yes
+    initial_value: '60.0'   # Conservative maximum servo angle
+  - id: servo_safety_limit
+    type: float
+    restore_value: yes
+    initial_value: '30.0'   # VERY CONSERVATIVE: Max ±30 units
+  - id: coxa_range_limit
+    type: float
+    restore_value: yes
+    initial_value: '40.0'   # Conservative coxa range
+   
+
+interval:
+  - interval: 50ms  # Enhanced IMU processing with PID control (50ms for better stability)
+    then:
+      - if:
+          condition:
+            - switch.is_on: kalman
+          then:
+            - lambda: |-
+                static float pitch = 0;
+                static float roll = 0;
+                static bool initialized = false;
+                float alpha = 0.98;
+                float dt = 0.05; // 50ms interval
+                
+                // Validate sensor states and check for reasonable values
+                if (!id(accel_x).has_state() || !id(accel_y).has_state() || !id(accel_z).has_state()) {
+                    ESP_LOGW("kalman", "Invalid accelerometer states detected.");
+                    return;
+                }
+                if (!id(gyro_x).has_state() || !id(gyro_y).has_state()) {
+                    ESP_LOGW("kalman", "Invalid gyroscope states detected.");
+                    return;
+                }
+
+                float ax = id(accel_x).state;
+                float ay = id(accel_y).state;
+                float az = id(accel_z).state;
+                float gx = id(gyro_x).state;
+                float gy = id(gyro_y).state;
+
+                // Sanity check for reasonable accelerometer values (should be around ±1g = ±9.8 m/s²)
+                if (abs(ax) > 50.0 || abs(ay) > 50.0 || abs(az) > 50.0) {
+                    ESP_LOGW("kalman", "Extreme accelerometer values detected: ax=%.2f, ay=%.2f, az=%.2f", ax, ay, az);
+                    return;
+                }
+                
+                // Sanity check for reasonable gyroscope values (should be ±2000 deg/s max)
+                if (abs(gx) > 5000.0 || abs(gy) > 5000.0) {
+                    ESP_LOGW("kalman", "Extreme gyroscope values detected: gx=%.2f, gy=%.2f", gx, gy);
+                    return;
+                }
+
+                // Calculate angles from accelerometer with better error handling
+                float denom_pitch = sqrt(ax*ax + az*az);
+                float denom_roll = sqrt(ay*ay + az*az);
+                
+                // Prevent division by zero and extreme values
+                float accel_pitch = 0, accel_roll = 0;
+                if (denom_pitch > 0.1) {  // Minimum threshold to prevent extreme values
+                    accel_pitch = atan(ay / denom_pitch) * 180.0 / M_PI;
+                    // Clamp to reasonable range
+                    accel_pitch = std::max(-90.0f, std::min(90.0f, accel_pitch));
+                }
+                if (denom_roll > 0.1) {   // Minimum threshold to prevent extreme values
+                    accel_roll = atan(-ax / denom_roll) * 180.0 / M_PI;
+                    // Clamp to reasonable range
+                    accel_roll = std::max(-90.0f, std::min(90.0f, accel_roll));
+                }
+                
+                // Initialize on first valid reading
+                if (!initialized) {
+                    pitch = accel_pitch;
+                    roll = accel_roll;
+                    initialized = true;
+                    ESP_LOGI("kalman", "Kalman filter initialized: pitch=%.2f, roll=%.2f", pitch, roll);
+                }
+                
+                // Kalman filter fusion
+                pitch = alpha * (pitch + gx * dt) + (1 - alpha) * accel_pitch;
+                roll  = alpha * (roll  + gy * dt) + (1 - alpha) * accel_roll;
+                
+                // Clamp final results to reasonable range
+                pitch = std::max(-180.0f, std::min(180.0f, pitch));
+                roll = std::max(-180.0f, std::min(180.0f, roll));
+                
+                id(kalman_pitch) = pitch;
+                id(kalman_roll) = roll;
+                
+                // PID Control for stability compensation (Freenove-style)
+                if (id(stability_enabled)) {
+                  // PID constants (matching Freenove: Kp=0.5, Ki=0.0, Kd=0.0025)
+                  float kp_pitch = id(pitch_kp).state;
+                  float ki_pitch = id(pitch_ki).state; 
+                  float kd_pitch = id(pitch_kd).state;
+                  
+                  float kp_roll = id(roll_kp).state;
+                  float ki_roll = id(roll_ki).state;
+                  float kd_roll = id(roll_kd).state;
+                  
+                  // Target is level (0 degrees)
+                  float pitch_error = 0 - pitch;
+                  float roll_error = 0 - roll;
+                  
+                  // Integral terms with saturation
+                  id(pitch_error_integral) += pitch_error;
+                  id(roll_error_integral) += roll_error;
+                  
+                  // Clamp integral to prevent windup (±10 like Freenove)
+                  if (id(pitch_error_integral) > 10.0) id(pitch_error_integral) = 10.0;
+                  if (id(pitch_error_integral) < -10.0) id(pitch_error_integral) = -10.0;
+                  if (id(roll_error_integral) > 10.0) id(roll_error_integral) = 10.0;
+                  if (id(roll_error_integral) < -10.0) id(roll_error_integral) = -10.0;
+                  
+                  // Derivative terms
+                  float pitch_derivative = pitch_error - id(pitch_error_previous);
+                  float roll_derivative = roll_error - id(roll_error_previous);
+                  
+                  // PID output calculation (Freenove incremental PID style)
+                  id(pitch_pid_output) = kp_pitch * pitch_error + ki_pitch * id(pitch_error_integral) + kd_pitch * pitch_derivative;
+                  id(roll_pid_output) = kp_roll * roll_error + ki_roll * id(roll_error_integral) + kd_roll * roll_derivative;
+                  
+                  // Limit PID output to reasonable range (±15 degrees like Freenove)
+                  id(pitch_pid_output) = std::max(-15.0f, std::min(15.0f, id(pitch_pid_output)));
+                  id(roll_pid_output) = std::max(-15.0f, std::min(15.0f, id(roll_pid_output)));
+                  
+                  // Store previous errors for next iteration
+                  id(pitch_error_previous) = pitch_error;
+                  id(roll_error_previous) = roll_error;
+                }
+  # Standby monitoring - check every 30 seconds for inactivity
+  - interval: 30s
+    then:
+      - lambda: |-
+          // Only check if not already in standby
+          if (!id(is_in_standby)) {
+            unsigned long current_time = millis();
+            unsigned long timeout_ms = id(standby_timeout_minutes) * 60 * 1000;
+            
+            // If no activity recorded yet, initialize
+            if (id(last_activity_time) == 0) {
+              id(last_activity_time) = current_time;
+              return;
+            }
+            
+            // Check if timeout exceeded
+            if ((current_time - id(last_activity_time)) > timeout_ms) {
+              ESP_LOGI("standby", "Entering standby mode after %d minutes of inactivity", id(standby_timeout_minutes));
+              id(standby_mode_enter).execute();
+            }
+          }
+          
+
+script:
+
+  # Activity update script - call this whenever user interacts with robot
+  - id: update_activity
+    mode: restart
+    then:
+      - lambda: |-
+          id(last_activity_time) = millis();
+          ESP_LOGD("standby", "Activity detected, resetting standby timer");  
+  # Enter standby mode
+  - id: standby_mode_enter
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(is_in_standby);'
+          then:
+            - lambda: |-
+                ESP_LOGI("standby", "Entering standby power mode");
+                id(is_in_standby) = true;
+            # Turn off RGB LED
+            - light.turn_off: rgb
+            # Stop any running scripts
+        
+            # Move all servos to neutral/rest
+            - button.press: retract
+            - delay: 3s
+            # Turn off PCA9685 power to save energy
+            - switch.turn_off: power
+            # Reduce WiFi power if available
+            - lambda: |-
+                ESP_LOGI("standby", "Standby mode active - reduced power consumption");
+            # Play standby sound
+            - select.set:
+                id: rtttl_player
+                option: "long"  
+  # Exit standby mode  
+  - id: standby_mode_exit
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: 'return id(is_in_standby);'
+          then:
+            - lambda: |-
+                ESP_LOGI("standby", "Exiting standby power mode");
+                id(is_in_standby) = false;
+            # Turn on PCA9685 power
+            - switch.turn_on: power
+            - delay: 1s
+            # Turn on RGB LED with wake effect
+            - light.turn_on:
+                id: rgb
+                effect: rainbow
+            - button.press: retract                
+            - delay: 3s
+            - light.turn_off: rgb
+            # Reset activity timer
+            - script.execute: update_activity
+            # Play wake sound
+            - select.set:
+                id: rtttl_player
+                option: "two_short"
+            - lambda: |-
+                ESP_LOGI("standby", "Robot awake and ready");                
+  
+
+  # Inverse Kinematics calculation (based on Freenove coordinateToAngle function)
+  - id: calculate_ik
+    mode: single
+    parameters:
+      leg_num: int
+      target_x: float
+      target_y: float
+      target_z: float
+    then:
+      - lambda: |-
+          // CORRECTED IK SCALING for -100 to +100 servo range
+          // ===================================================
+          // SERVO SCALING: 90° = 100 servo units (1.111 units per degree)
+          // SERVO RANGE: -100 to +100 (full ±90° range available)
+          // WORKSPACE: Expanded safe ranges for better IK performance
+          // 
+          // UNIFIED SERVO MAPPING: All legs use consistent negative servo mapping
+          // - All coxa servos: +CW (same for all legs)
+          // - All femur servos: negative values for down/standing position
+          // - All tibia servos: negative values for extended/standing position
+          // This matches the STAND button behavior (all femurs/tibias = -10)
+          // Z-coordinate: INVERTED - more negative Z = legs extend down more (lower stance)
+          
+          float ox = target_x;
+          float oy = target_y; 
+          float oz = target_z;
+          float l1 = id(coxa_length);   // 33mm
+          float l2 = id(femur_length);  // 90mm  
+          float l3 = id(tibia_length);  // 110mm
+          
+          // Determine if this is a right side (1,2,3) or left side (4,5,6) leg
+          bool is_right_side = (leg_num <= 3);
+          
+          // IMPROVED SAFETY: Ensure target coordinates are reasonable
+          // Clamp target to safe workspace - more generous ranges for better IK performance
+          ox = std::max(-80.0f, std::min(80.0f, ox));    // X range: wider for better movement
+          oy = std::max(35.0f, std::min(120.0f, oy));    // Y range: enforce minimum distance from body center
+          oz = std::max(-80.0f, std::min(30.0f, oz));    // Z range: wider for better leg lift capability
+          
+          ESP_LOGI("ik", "Leg %d: Clamped target(%.1f,%.1f,%.1f)", leg_num, ox, oy, oz);
+          
+          // Apply stability compensation if enabled
+          if (id(stability_enabled)) {
+            oy += id(pitch_pid_output) * 1.0;  // Reduced scale factor
+            oz += id(roll_pid_output) * 1.0;
+          }
+          
+          // Step 1: Calculate coxa angle (horizontal rotation)
+          // All coxa servos: + = clockwise, - = counterclockwise
+          float coxa_angle_rad = atan2(ox, oy);
+          float coxa_angle_deg = coxa_angle_rad * 180.0 / M_PI;
+          
+          // Step 2: Calculate 2D distance in the leg plane (after coxa rotation)
+          float horizontal_reach = sqrt(ox*ox + oy*oy) - l1;  // Subtract coxa length
+          
+          // IMPROVED SAFETY: Ensure horizontal reach is positive (foot must be outside coxa joint)
+          if (horizontal_reach < 2.0) {
+            ESP_LOGW("ik", "Target too close to body center: horizontal_reach=%.1f - SKIPPING", horizontal_reach);
+            return;
+          }
+          
+          // CORRECTED: Invert Z coordinate to match expected behavior
+          // More negative body_height should mean lower stance (legs extend down more)
+          float vertical_reach = -oz;  // Invert Z: negative input = positive reach (down)
+          float total_reach = sqrt(horizontal_reach*horizontal_reach + vertical_reach*vertical_reach);
+          
+          // IMPROVED SAFETY: Check if target is reachable with relaxed margins
+          float max_reach = l2 + l3 - 10;  // Smaller safety margin for better IK performance
+          if (total_reach > max_reach) {
+            ESP_LOGW("ik", "Target unreachable: %.1f > %.1f - using clamped position", total_reach, max_reach);
+            // Instead of skipping, clamp to maximum reach and continue
+            float scale_factor = max_reach / total_reach;
+            horizontal_reach *= scale_factor;
+            vertical_reach *= scale_factor;
+            total_reach = max_reach;
+            ESP_LOGI("ik", "Clamped to reach: horizontal=%.1f, vertical=%.1f, total=%.1f", 
+                     horizontal_reach, vertical_reach, total_reach);
+          }
+          
+          // Step 3: Calculate knee angle using law of cosines
+          float cos_knee = (l2*l2 + l3*l3 - total_reach*total_reach) / (2.0*l2*l3);
+          cos_knee = std::max(-0.99f, std::min(0.99f, cos_knee));  // Avoid extreme angles
+          float knee_angle_rad = acos(cos_knee);
+          float knee_angle_deg = knee_angle_rad * 180.0 / M_PI;
+          
+          // Step 4: Calculate femur angle
+          float cos_alpha = (l2*l2 + total_reach*total_reach - l3*l3) / (2.0*l2*total_reach);
+          cos_alpha = std::max(-0.99f, std::min(0.99f, cos_alpha));
+          float alpha = acos(cos_alpha) * 180.0 / M_PI;
+          
+          float beta = atan2(vertical_reach, horizontal_reach) * 180.0 / M_PI;
+          float femur_angle_deg = alpha + beta;
+          
+          // Step 5: Calculate tibia angle (relative to ground, not femur)
+          float tibia_angle_deg = femur_angle_deg - knee_angle_deg;
+          
+          // Step 6: Convert to servo values with IMPROVED SCALING for -100 to +100 range
+          // SERVO SCALING: 90° = 100 servo units (1.111 units per degree)
+          // Full range utilization with safety limits
+          
+          // Coxa: Map angle to servo value (same for all legs)
+          float coxa_servo = coxa_angle_deg * id(servo_scale_factor);
+          coxa_servo = std::max(-id(coxa_range_limit), std::min(id(coxa_range_limit), coxa_servo));
+          
+          float femur_servo, tibia_servo;
+          
+          // CORRECTED ANGLE-TO-SERVO MAPPING - Based on actual STAND button behavior
+          // ALL legs use negative servo values for standing position (observed from STAND button)
+          // This indicates that ALL servos are wired/oriented consistently
+          // 
+          // UNIFIED MAPPING: All legs use same direction mapping
+          // Positive angles = negative servo values for both femur and tibia
+          // This matches the STAND button which sets all femurs and tibias to -10
+          
+          femur_servo = -femur_angle_deg * id(servo_scale_factor);
+          tibia_servo = -tibia_angle_deg * id(servo_scale_factor);
+          
+          // Note: Removed asymmetric left/right mapping since STAND button shows
+          // all servos use the same direction convention
+          
+          // Apply VERY CONSERVATIVE safety limits to prevent servo damage
+          float safety_limit = id(servo_safety_limit);  // Now defaults to 30
+          coxa_servo = std::max(-safety_limit, std::min(safety_limit, coxa_servo));
+          femur_servo = std::max(-safety_limit, std::min(safety_limit, femur_servo)); 
+          tibia_servo = std::max(-safety_limit, std::min(safety_limit, tibia_servo)); 
+          
+          // STRICT SAFETY CHECK: Block any extreme values to prevent damage
+          if (abs(coxa_servo) > safety_limit || abs(femur_servo) > safety_limit || abs(tibia_servo) > safety_limit) {
+            ESP_LOGE("ik", "BLOCKING DANGEROUS servo values: C=%.1f F=%.1f T=%.1f - SAFETY LIMIT=%.1f", 
+                     coxa_servo, femur_servo, tibia_servo, safety_limit);
+            return; // BLOCK execution to prevent damage
+          }
+          
+          ESP_LOGI("ik", "Leg %d (%s): Target(%.1f,%.1f,%.1f) -> Angles(C=%.1f,F=%.1f,T=%.1f) -> Servos(%.1f,%.1f,%.1f)", 
+                   leg_num, is_right_side ? "RIGHT" : "LEFT", ox, oy, oz, coxa_angle_deg, femur_angle_deg, tibia_angle_deg, 
+                   coxa_servo, femur_servo, tibia_servo);
+          
+          // Apply to specific leg servos (only if IK is enabled)
+          if (id(inverse_kinematics).state) {
+            switch (leg_num) {
+              case 1:
+                id(c1).make_call().set_value(coxa_servo).perform();
+                id(f1).make_call().set_value(femur_servo).perform();
+                id(t1).make_call().set_value(tibia_servo).perform();
+                break;
+              case 2:
+                id(c2).make_call().set_value(coxa_servo).perform();
+                id(f2).make_call().set_value(femur_servo).perform();
+                id(t2).make_call().set_value(tibia_servo).perform();
+                break;
+              case 3:
+                id(c3).make_call().set_value(coxa_servo).perform();
+                id(f3).make_call().set_value(femur_servo).perform();
+                id(t3).make_call().set_value(tibia_servo).perform();
+                break;
+              case 4:
+                id(c4).make_call().set_value(coxa_servo).perform();
+                id(f4).make_call().set_value(femur_servo).perform();
+                id(t4).make_call().set_value(tibia_servo).perform();
+                break;
+              case 5:
+                id(c5).make_call().set_value(coxa_servo).perform();
+                id(f5).make_call().set_value(femur_servo).perform();
+                id(t5).make_call().set_value(tibia_servo).perform();
+                break;
+              case 6:
+                id(c6).make_call().set_value(coxa_servo).perform();
+                id(f6).make_call().set_value(femur_servo).perform();
+                id(t6).make_call().set_value(tibia_servo).perform();
+                break;
+            }
+          } else {
+            ESP_LOGW("ik", "Inverse kinematics disabled - not applying servo values");
+          }
+
+  # Body posture balance (based on Freenove postureBalance function)
+  - id: body_balance
+    mode: single
+    parameters:
+      roll_deg: float
+      pitch_deg: float  
+      yaw_deg: float
+    then:
+      - lambda: |-
+          // Freenove body balance calculation
+          float r = roll_deg * M_PI / 180.0;
+          float p = pitch_deg * M_PI / 180.0;
+          float y = yaw_deg * M_PI / 180.0;
+          
+          // Rotation matrices (Freenove method)
+          float rotx[3][3] = {{1, 0, 0},
+                              {0, cosf(p), -sinf(p)},
+                              {0, sinf(p), cosf(p)}};
+          
+          float roty[3][3] = {{cosf(r), 0, -sinf(r)},
+                              {0, 1, 0},
+                              {sinf(r), 0, cosf(r)}};
+          
+          float rotz[3][3] = {{cosf(y), -sinf(y), 0},
+                              {sinf(y), cosf(y), 0},
+                              {0, 0, 1}};
+          
+          // Freenove foot positions relative to body center
+          float footpoints[6][3] = {{137.1, 189.4, 0},     // Leg 1
+                                    {225, 0, 0},            // Leg 2  
+                                    {137.1, -189.4, 0},     // Leg 3
+                                    {-137.1, -189.4, 0},    // Leg 4
+                                    {-225, 0, 0},           // Leg 5
+                                    {-137.1, 189.4, 0}};    // Leg 6
+          
+          float pos[3] = {id(body_x_offset), id(body_y_offset), id(target_body_height)};
+          
+          // Calculate transformed positions for each leg
+          for (int i = 0; i < 6; i++) {
+            // Apply rotation matrix transformation
+            float x = footpoints[i][0];
+            float y = footpoints[i][1]; 
+            float z = footpoints[i][2];
+            
+            // Combined rotation (simplified for performance)
+            float tx = pos[0] + x*cosf(r)*cosf(y) + y*(-cosf(r)*sinf(y)) + z*sinf(r);
+            float ty = pos[1] + x*(sinf(p)*sinf(r)*cosf(y) + cosf(p)*sinf(y)) + 
+                       y*(-sinf(p)*sinf(r)*sinf(y) + cosf(p)*cosf(y)) + z*(-sinf(p)*cosf(r));
+            float tz = pos[2] + x*(-cosf(p)*sinf(r)*cosf(y) + sinf(p)*sinf(y)) + 
+                       y*(cosf(p)*sinf(r)*sinf(y) + sinf(p)*cosf(y)) + z*(cosf(p)*cosf(r));
+            
+            // Apply IK to each leg
+            id(calculate_ik).execute(i+1, tx, ty, tz);
+          }
+
+  # Auto-balance mode (Freenove imu6050 function equivalent)
+  - id: auto_balance_mode
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGI("balance", "Starting auto-balance mode");
+      # Initial neutral position
+      - script.execute:
+          id: body_balance
+          roll_deg: 0
+          pitch_deg: 0
+          yaw_deg: 0
+      - delay: 2s
+      # Main balance loop
+      - while:
+          condition:
+            lambda: 'return id(stability_enabled);'
+          then:
+            - delay: 20ms  # 50Hz update rate like Freenove
+            - lambda: |-
+                if (id(stability_enabled)) {
+                  // Use PID outputs as balance compensation
+                  float r = id(roll_pid_output);
+                  float p = id(pitch_pid_output);
+                  id(body_balance).execute(r, p, 0);
+                }
+
+
+
+switch:
+  # Standby mode controls
+  - platform: template
+    id: standby_mode
+    name: "Standby Mode"
+    icon: "mdi:sleep"
+    entity_category: config
+    turn_on_action:
+      - script.execute: standby_mode_enter
+    turn_off_action:
+      - script.execute: standby_mode_exit
+    lambda: |-
+      return id(is_in_standby);
+
+  # Auto standby enable/disable
+  - platform: template
+    id: auto_standby
+    name: "Auto Standby"
+    icon: "mdi:timer-off"
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+ # PCA9685 power enable for servos
+  - id: power
+    name: SERVO POWER(PCA9685)
+    icon: mdi:lightning-bolt-circle
+    platform: gpio
+    pin: GPIO6
+    inverted: True
+    restore_mode: ALWAYS_ON
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 7    
+  # Disables KALMAN filter pitch and roll calculations
+  - platform: template
+    id: kalman
+    name: "KALMAN"
+    optimistic: True
+    restore_mode: ALWAYS_ON
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 11
+
+  # Enable/disable stability control system
+  - platform: template
+    id: stability_control
+    name: "Stability Control"
+    icon: mdi:scale-balance
+    optimistic: True
+    restore_mode: RESTORE_DEFAULT_OFF
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 12
+    on_turn_on:
+      - lambda: |-
+          id(stability_enabled) = true;
+          // Reset PID integrals when enabling
+          id(pitch_error_integral) = 0;
+          id(roll_error_integral) = 0;
+          ESP_LOGI("stability", "Stability control enabled");
+    on_turn_off:
+      - lambda: |-
+          id(stability_enabled) = false;
+          // Reset PID outputs
+          id(pitch_pid_output) = 0;
+          id(roll_pid_output) = 0;
+          ESP_LOGI("stability", "Stability control disabled");
+
+  # Enable/disable inverse kinematics - ENABLED with new safer math
+  - platform: template
+    id: inverse_kinematics
+    name: "Inverse Kinematics"
+    icon: mdi:vector-triangle
+    optimistic: True
+    restore_mode: RESTORE_DEFAULT_ON
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 13
+
+
+
+  - platform: template
+    id: mcu_local_wifi
+    name: MCU Local WIFI
+    restore_mode: ALWAYS_ON
+    optimistic: True
+    icon: mdi:wifi-strength-off
+    entity_category: config
+    on_turn_on:
+      then:
+        - logger.log: 
+            level: INFO
+            format: "LOCAL WIFI Turned ON!!!"          
+        - delay: 1s            
+        - lambda: !lambda |-
+            wifi::global_wifi_component->enable();
+
+    on_turn_off:
+      then:
+        - logger.log: 
+            level: INFO
+            format: "LOCAL WIFI Turned OFF!!!"          
+        - delay: 1s            
+        - lambda: !lambda |-
+            wifi::global_wifi_component->disable();
+
+
+button:
+
+  # Emergency IK disable button
+  - platform: template
+    id: emergency_ik_disable
+    name: "🚨 EMERGENCY: Disable IK 🚨"
+    icon: mdi:alert-octagon
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 1
+    on_press:
+      - switch.turn_off: inverse_kinematics
+      - button.press: retract
+      - lambda: |-
+          ESP_LOGE("safety", "🚨 IK DISABLED - Robot returned to safe position 🚨");
+
+  # Manual wake from standby
+  - platform: template
+    id: wake_button
+    name: "Wake Robot"
+    icon: "mdi:power"
+    entity_category: config
+    on_press:
+      - script.execute: standby_mode_exit
+
+ 
+  - platform: template
+    name: "Calibrate KALMAN Pitch & Roll"
+    id: cal_kal
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 11      
+    on_press:
+      then:
+        - lambda: |-
+            id(pitch_offset) = id(kalman_pitch);
+            id(roll_offset) = id(kalman_roll);  
+  - platform: template
+    name: STAND(0,10,10)
+    id: stand
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 6      
+    on_press: 
+      then:
+        - lambda: !lambda |-
+            // First move all femurs to 90 (safe position)
+            id(f1).make_call().set_value(-90).perform();
+            id(f2).make_call().set_value(-90).perform();
+            id(f3).make_call().set_value(-90).perform();
+            id(f4).make_call().set_value(-90).perform();
+            id(f5).make_call().set_value(-90).perform();
+            id(f6).make_call().set_value(-90).perform();
+        - delay: 300ms
+                                
+        - lambda: !lambda |-
+            // Set all coxa to 0 (center)
+            id(c1).make_call().set_value(0).perform();
+            id(c2).make_call().set_value(0).perform();
+            id(c3).make_call().set_value(0).perform();
+            id(c4).make_call().set_value(0).perform();
+            id(c5).make_call().set_value(0).perform();
+            id(c6).make_call().set_value(0).perform();
+            // Set femurs to 10 (standing position)
+            id(f1).make_call().set_value(-10).perform();
+            id(f2).make_call().set_value(-10).perform();
+            id(f3).make_call().set_value(-10).perform();
+            id(f4).make_call().set_value(-10).perform();
+            id(f5).make_call().set_value(-10).perform();
+            id(f6).make_call().set_value(-10).perform();
+            // Set tibias to 10
+            id(t1).make_call().set_value(-10).perform();
+            id(t2).make_call().set_value(-10).perform();
+            id(t3).make_call().set_value(-10).perform();
+            id(t4).make_call().set_value(-10).perform();
+            id(t5).make_call().set_value(-10).perform();
+            id(t6).make_call().set_value(-10).perform();   
+
+  - platform: template
+    name: RETRACT(neutral position)
+    id: retract
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 6      
+    on_press: 
+      then:
+        - script.execute: update_activity        
+        - lambda: !lambda |-
+            // Move all femurs to 80 (intermediate position)
+            id(f1).make_call().set_value(-80).perform();
+            id(f2).make_call().set_value(-80).perform();
+            id(f3).make_call().set_value(-80).perform();
+            id(f4).make_call().set_value(-80).perform();
+            id(f5).make_call().set_value(-80).perform();
+            id(f6).make_call().set_value(-80).perform();                              
+        - delay: 300ms
+        - lambda: !lambda |-
+            // Move all femurs to 85
+            id(f1).make_call().set_value(-85).perform();
+            id(f2).make_call().set_value(-85).perform();
+            id(f3).make_call().set_value(-85).perform();
+            id(f4).make_call().set_value(-85).perform();
+            id(f5).make_call().set_value(-85).perform();
+            id(f6).make_call().set_value(-85).perform();                              
+        - delay: 300ms                  
+        - lambda: !lambda |-       
+            // Move coxa to 1 and set femurs/tibias
+            id(c1).make_call().set_value(-1).perform();
+            id(c2).make_call().set_value(-1).perform();
+            id(c3).make_call().set_value(-1).perform();
+            id(c4).make_call().set_value(-1).perform();
+            id(c5).make_call().set_value(-1).perform();
+            id(c6).make_call().set_value(-1).perform();
+            id(f1).make_call().set_value(-90).perform();
+            id(f2).make_call().set_value(-90).perform();
+            id(f3).make_call().set_value(-90).perform();
+            id(f4).make_call().set_value(-90).perform();
+            id(f5).make_call().set_value(-90).perform();
+            id(f6).make_call().set_value(-90).perform();
+            id(t1).make_call().set_value(80).perform();
+            id(t2).make_call().set_value(80).perform();
+            id(t3).make_call().set_value(80).perform();
+            id(t4).make_call().set_value(80).perform();
+            id(t5).make_call().set_value(80).perform();
+            id(t6).make_call().set_value(80).perform();        
+        - delay: 300ms
+        - lambda: !lambda |-
+            // Move coxa to -1 and adjust other servos
+            id(c1).make_call().set_value(1).perform();
+            id(c2).make_call().set_value(1).perform();
+            id(c3).make_call().set_value(1).perform();
+            id(c4).make_call().set_value(1).perform();
+            id(c5).make_call().set_value(1).perform();
+            id(c6).make_call().set_value(-1).perform();
+            id(f1).make_call().set_value(-95).perform();
+            id(f2).make_call().set_value(-95).perform();
+            id(f3).make_call().set_value(-95).perform();
+            id(f4).make_call().set_value(95).perform();
+            id(f5).make_call().set_value(95).perform();
+            id(f6).make_call().set_value(95).perform();
+            id(t1).make_call().set_value(55).perform();
+            id(t2).make_call().set_value(55).perform();
+            id(t3).make_call().set_value(55).perform();
+            id(t4).make_call().set_value(55).perform();
+            id(t5).make_call().set_value(55).perform();
+            id(t6).make_call().set_value(55).perform();                
+        - delay: 300ms            
+        - lambda: !lambda |-
+            // Final retract position
+            id(c1).make_call().set_value(0).perform();
+            id(c2).make_call().set_value(0).perform();
+            id(c3).make_call().set_value(0).perform();
+            id(c4).make_call().set_value(0).perform();
+            id(c5).make_call().set_value(0).perform();
+            id(c6).make_call().set_value(0).perform();
+            id(f1).make_call().set_value(-90).perform();
+            id(f2).make_call().set_value(-90).perform();
+            id(f3).make_call().set_value(-90).perform();
+            id(f4).make_call().set_value(-90).perform();
+            id(f5).make_call().set_value(-90).perform();
+            id(f6).make_call().set_value(-90).perform();
+            id(t1).make_call().set_value(-60).perform();
+            id(t2).make_call().set_value(-60).perform();
+            id(t3).make_call().set_value(-60).perform();
+            id(t4).make_call().set_value(-60).perform();
+            id(t5).make_call().set_value(-60).perform();
+            id(t6).make_call().set_value(-60).perform();          
+     
+  - platform: template
+    name: UPWARD
+    id: upward
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 6    
+    on_press: 
+      then:
+        - lambda: !lambda |-
+            // Move all femurs to 80
+            id(f1).make_call().set_value(-80).perform();
+            id(f2).make_call().set_value(-80).perform();
+            id(f3).make_call().set_value(-80).perform();
+            id(f4).make_call().set_value(-80).perform();
+            id(f5).make_call().set_value(-80).perform();
+            id(f6).make_call().set_value(-80).perform();                              
+        - delay: 300ms        
+        - lambda: !lambda |-
+            // Set all coxa to 0 (center) and final upward position
+            id(c1).make_call().set_value(0).perform();
+            id(c2).make_call().set_value(0).perform();
+            id(c3).make_call().set_value(0).perform();
+            id(c4).make_call().set_value(0).perform();
+            id(c5).make_call().set_value(0).perform();
+            id(c6).make_call().set_value(0).perform();
+            id(f1).make_call().set_value(-90).perform();
+            id(f2).make_call().set_value(-90).perform();
+            id(f3).make_call().set_value(-90).perform();
+            id(f4).make_call().set_value(-90).perform();
+            id(f5).make_call().set_value(-90).perform();
+            id(f6).make_call().set_value(-90).perform();
+            id(t1).make_call().set_value(90).perform();
+            id(t2).make_call().set_value(90).perform();
+            id(t3).make_call().set_value(90).perform();
+            id(t4).make_call().set_value(90).perform();
+            id(t5).make_call().set_value(90).perform();
+            id(t6).make_call().set_value(90).perform();         
+  - platform: template
+    name: OUTWARD
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 6    
+    on_press: 
+      then:
+        - lambda: !lambda |-
+            // Move femurs to 80 and coxa to -1
+            id(f1).make_call().set_value(-80).perform();
+            id(f2).make_call().set_value(-80).perform();
+            id(f3).make_call().set_value(-80).perform();
+            id(f4).make_call().set_value(-80).perform();
+            id(f5).make_call().set_value(-80).perform();
+            id(f6).make_call().set_value(-80).perform();
+            id(c1).make_call().set_value(5).perform();
+            id(c2).make_call().set_value(5).perform();
+            id(c3).make_call().set_value(5).perform();
+            id(c4).make_call().set_value(-5).perform();
+            id(c5).make_call().set_value(-5).perform();
+            id(c6).make_call().set_value(-5).perform();                              
+        - delay: 300ms
+        - lambda: !lambda |-
+            // Move femurs to 85 and coxa to 1
+            id(f1).make_call().set_value(-85).perform();
+            id(f2).make_call().set_value(-85).perform();
+            id(f3).make_call().set_value(-85).perform();
+            id(f4).make_call().set_value(-85).perform();
+            id(f5).make_call().set_value(-85).perform();
+            id(f6).make_call().set_value(-85).perform();
+            id(c1).make_call().set_value(-5).perform();
+            id(c2).make_call().set_value(-5).perform();
+            id(c3).make_call().set_value(-5).perform();
+            id(c4).make_call().set_value(5).perform();
+            id(c5).make_call().set_value(5).perform();
+            id(c6).make_call().set_value(5).perform();
+        - delay: 300ms                  
+        - lambda: !lambda |-       
+            // Final outward position
+            id(c1).make_call().set_value(0).perform();
+            id(c2).make_call().set_value(0).perform();
+            id(c3).make_call().set_value(0).perform();
+            id(c4).make_call().set_value(0).perform();
+            id(c5).make_call().set_value(0).perform();
+            id(c6).make_call().set_value(0).perform();
+            id(f1).make_call().set_value(-90).perform();
+            id(f2).make_call().set_value(-90).perform();
+            id(f3).make_call().set_value(-90).perform();
+            id(f4).make_call().set_value(-90).perform();
+            id(f5).make_call().set_value(-90).perform();
+            id(f6).make_call().set_value(-90).perform();
+            id(t1).make_call().set_value(80).perform();
+            id(t2).make_call().set_value(80).perform();
+            id(t3).make_call().set_value(80).perform();
+            id(t4).make_call().set_value(80).perform();
+            id(t5).make_call().set_value(80).perform();
+            id(t6).make_call().set_value(80).perform(); 
+        - delay: 300ms                              
+        - lambda: !lambda |-
+            id(fy).make_call().set_value(-30).perform();
+            id(tz).make_call().set_value(90).perform();
+
+  # MUCH SAFER IK test with rewritten math and conservative targets
+  - platform: template
+    name: "Test IK - Very Conservative"
+    icon: mdi:robot-industrial-outline
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 70
+    on_press:
+      - lambda: |-
+          ESP_LOGI("ik_test", "Testing NEW IK math with very conservative positions");
+          // Enable IK for this test
+          id(inverse_kinematics).publish_state(true);
+      # Test with very conservative positions - much closer to STAND button values
+      # With corrected Z inversion: more negative = lower stance
+      - script.execute:
+          id: calculate_ik
+          leg_num: 1
+          target_x: 0.0
+          target_y: 50.0
+          target_z: -10.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 2
+          target_x: 0.0
+          target_y: 50.0
+          target_z: -10.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 3
+          target_x: 0.0
+          target_y: 50.0
+          target_z: -10.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 4
+          target_x: 0.0
+          target_y: 50.0
+          target_z: -10.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 5
+          target_x: 0.0
+          target_y: 50.0
+          target_z: -10.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 6
+          target_x: 0.0
+          target_y: 50.0
+          target_z: -10.0
+      # Wait for servos to complete movement
+      - delay: 1s
+      - lambda: |-
+          ESP_LOGI("ik_test", "Conservative IK test completed - values should be under ±30 with new safety limits");
+
+  # Test to find proper IK coordinates for lower stance - CONSERVATIVE
+  - platform: template
+    name: "Test IK - Lower Stance (SAFE)" 
+    icon: mdi:robot-industrial-outline
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 71
+    on_press:
+      - lambda: |-
+          ESP_LOGI("ik_test", "Testing IK for lower stance - CONSERVATIVE MODE");
+          id(inverse_kinematics).publish_state(true);
+      # Much more conservative coordinates for lower stance testing
+      - script.execute:
+          id: calculate_ik
+          leg_num: 1
+          target_x: 0.0
+          target_y: 60.0
+          target_z: -20.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 2
+          target_x: 0.0
+          target_y: 60.0
+          target_z: -20.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 3
+          target_x: 0.0
+          target_y: 60.0
+          target_z: -20.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 4
+          target_x: 0.0
+          target_y: 60.0
+          target_z: -20.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 5
+          target_x: 0.0
+          target_y: 60.0
+          target_z: -20.0
+      - script.execute:
+          id: calculate_ik
+          leg_num: 6
+          target_x: 0.0
+          target_y: 60.0
+          target_z: -20.0
+      - delay: 1s
+      - lambda: |-
+          ESP_LOGI("ik_test", "CONSERVATIVE lower stance IK test completed - should stay under ±30 limits");
+
+  # SAFE test button using your working servo system
+  - platform: template
+    name: "Test Safe Movement"
+    icon: mdi:robot-industrial-outline
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 71
+    on_press:
+      - lambda: |-
+          ESP_LOGI("safe_test", "Safe movement test using individual servo controls");
+          // Use STAND positions as a safe test with individual servo controls
+          id(c1).make_call().set_value(0).perform();
+          id(c2).make_call().set_value(0).perform();
+          id(c3).make_call().set_value(0).perform();
+          id(c4).make_call().set_value(0).perform();
+          id(c5).make_call().set_value(0).perform();
+          id(c6).make_call().set_value(0).perform();
+          id(f1).make_call().set_value(10).perform();
+          id(f2).make_call().set_value(10).perform();
+          id(f3).make_call().set_value(10).perform();
+          id(f4).make_call().set_value(10).perform();
+          id(f5).make_call().set_value(10).perform();
+          id(f6).make_call().set_value(10).perform();
+          id(t1).make_call().set_value(10).perform();
+          id(t2).make_call().set_value(10).perform();
+          id(t3).make_call().set_value(10).perform();
+          id(t4).make_call().set_value(10).perform();
+          id(t5).make_call().set_value(10).perform();
+          id(t6).make_call().set_value(10).perform();
+
+                                          
+
+  - platform: restart
+    name: 'MCU Restart'
+    id: mcu_restart
+    entity_category: diagnostic
+    icon: mdi:restart
+
+  - platform: safe_mode
+    entity_category: diagnostic
+    name: 'MCU Restart Safe Mode'
+  
+  - platform: shutdown
+    entity_category: diagnostic
+    name: 'MCU Shutdown'
+    on_press: 
+      then:
+        - button.press: retract         
+  
+  - platform: factory_reset
+    entity_category: diagnostic
+    name: 'MCU Factory Reset'
+
+number:
+
+  # Standby timeout configuration
+  - platform: template
+    id: standby_timeout
+    name: "Standby Timeout (minutes)"
+    icon: "mdi:timer"
+    entity_category: config
+    min_value: 1
+    max_value: 20
+    step: 1
+    mode: SLIDER
+    restore_value: true
+    initial_value: 1
+    set_action:
+      - lambda: |-
+          id(standby_timeout_minutes) = (int)x;
+          ESP_LOGI("standby", "Standby timeout set to %d minutes", (int)x);
+
+  # PID Control Parameters (Freenove defaults: Kp=0.5, Ki=0.0, Kd=0.0025)
+  - platform: template
+    id: pitch_kp
+    name: "Pitch Kp"
+    icon: mdi:tune-variant
+    min_value: 0
+    max_value: 2
+    step: 0.1
+    initial_value: 0.5
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 61
+
+  - platform: template
+    id: pitch_ki
+    name: "Pitch Ki"
+    icon: mdi:tune-variant
+    min_value: 0
+    max_value: 1
+    step: 0.01
+    initial_value: 0.0
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 62
+
+  - platform: template
+    id: pitch_kd
+    name: "Pitch Kd"
+    icon: mdi:tune-variant
+    min_value: 0
+    max_value: 0.1
+    step: 0.0025
+    initial_value: 0.0025
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 63
+
+  - platform: template
+    id: roll_kp
+    name: "Roll Kp"
+    icon: mdi:tune-variant
+    min_value: 0
+    max_value: 2
+    step: 0.1
+    initial_value: 0.5
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 64
+
+  - platform: template
+    id: roll_ki
+    name: "Roll Ki"
+    icon: mdi:tune-variant
+    min_value: 0
+    max_value: 1
+    step: 0.01
+    initial_value: 0.0
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 65
+
+  - platform: template
+    id: roll_kd
+    name: "Roll Kd"
+    icon: mdi:tune-variant
+    min_value: 0
+    max_value: 0.1
+    step: 0.0025
+    initial_value: 0.0025
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 66
+
+  # IK Servo Scaling Configuration - CONSERVATIVE settings after servo damage
+  - platform: template
+    id: ik_servo_scale
+    name: "IK Servo Scale Factor"
+    icon: mdi:tune-variant
+    min_value: 0.1
+    max_value: 0.8
+    step: 0.05
+    initial_value: 0.5
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "units/deg"
+    entity_category: config
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 67
+    on_value:
+      - lambda: |-
+          id(servo_scale_factor) = x;
+          ESP_LOGI("ik_config", "Servo scale factor updated to %.3f", x);
+
+  - platform: template
+    id: ik_safety_limit
+    name: "IK Safety Limit"
+    icon: mdi:shield-check
+    min_value: 10
+    max_value: 50
+    step: 5
+    initial_value: 30
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "units"
+    entity_category: config
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 68
+    on_value:
+      - lambda: |-
+          id(servo_safety_limit) = x;
+          ESP_LOGI("ik_config", "Servo safety limit updated to %.0f", x);
+
+  - platform: template
+    id: ik_coxa_range
+    name: "Coxa Range Limit"
+    icon: mdi:rotate-3d-variant
+    min_value: 20
+    max_value: 60
+    step: 5
+    initial_value: 40
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "units"
+    entity_category: config
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 69
+    on_value:
+      - lambda: |-
+          id(coxa_range_limit) = x;
+          ESP_LOGI("ik_config", "Coxa range limit updated to %.0f", x);
+
+  # Body position controls
+  - platform: template
+    id: body_height
+    name: "Body Height(-downward +upward)"
+    icon: mdi:arrow-up-down
+    min_value: -50
+    max_value: 0
+    step: 5
+    initial_value: -25
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "mm"
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 70
+    on_value:
+      - lambda: |-
+          id(target_body_height) = x;
+
+  - platform: template
+    id: body_x
+    name: "Body X Position"
+    icon: mdi:arrow-left-right
+    min_value: -40
+    max_value: 40
+    step: 5
+    initial_value: 0
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "mm"
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 71
+    on_value:
+      - lambda: |-
+          id(body_x_offset) = x;
+
+  - platform: template
+    id: body_y
+    name: "Body Y Position"
+    icon: mdi:arrow-up-down
+    min_value: -40
+    max_value: 40
+    step: 5
+    initial_value: 10
+    mode: SLIDER
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "mm"
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 72
+    on_value:
+      - lambda: |-
+          id(body_y_offset) = x;
+
+ ####Freenove Hexapod SHIELD COXA X
+  - id: cx #### 
+    platform: template
+    name: COXA X(+clockwise -counterclock)
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 5
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 19  
+    on_value: 
+        - lambda: !lambda |-
+            id(c1).make_call().set_value(x).perform();
+            id(c2).make_call().set_value(x).perform();
+            id(c3).make_call().set_value(x).perform();
+            id(c4).make_call().set_value(x).perform();
+            id(c5).make_call().set_value(x).perform();
+            id(c6).make_call().set_value(x).perform();            
+                   
+
+####Freenove Hexapod SHIELD FEMUR X  
+  - platform: template
+    id: fy
+    name: FEMUR Y(-up +down)
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 5
+    initial_value: 90
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 18
+    on_value: 
+        - lambda: !lambda |-
+            id(f1).make_call().set_value(x).perform();
+            id(f2).make_call().set_value(x).perform();
+            id(f3).make_call().set_value(x).perform();
+            id(f4).make_call().set_value(x).perform();
+            id(f5).make_call().set_value(x).perform();
+            id(f6).make_call().set_value(x).perform();    
+
+                      
+####Freenove Hexapod SHIELD TIBIA Z
+  - platform: template
+    id: tz
+    name: TIBIA Z(-retract +extend)
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 5
+    initial_value: 20
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 21  
+    on_value:
+        - lambda: !lambda |-
+            id(t1).make_call().set_value(x).perform();
+            id(t2).make_call().set_value(x).perform();
+            id(t3).make_call().set_value(x).perform(); 
+            id(t4).make_call().set_value(x).perform();
+            id(t5).make_call().set_value(x).perform();
+            id(t6).make_call().set_value(x).perform();//negative value breaks mirror, attains symetry with counter side.             
+
+  
+ ####Freenove Hexapod SHIELD LEG1
+  - platform: template
+    id: c1
+    name: 'COXA1 (fns_h0_pwm2) LEG1'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 25 
+    on_value:
+        - lambda: |-
+            id(coxa1).write(x  / 100);       
+
+
+      
+  - platform: template
+    id: f1
+    name: 'FEMUR1 (fns_h0_pwm1) LEG1'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 27    
+    on_value: 
+        - lambda: |-
+            id(femur1).write(x  / 100);        
+
+
+
+  - platform: template
+    id: t1
+    name: 'TIBIA1 (fns_h0_pwm0) LEG1'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 29  
+    on_value: 
+        - lambda: |-
+            id(tibia1).write(x  / 100); 
+
+  
+####Freenove Hexapod SHIELD LEG2
+  - platform: template 
+    id: c2
+    name: 'COXA2 (fns_h0_pwm5) LEG2'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol  
+      sorting_weight: 31
+    on_value:   
+        - lambda: |-
+            id(coxa2).write(x  / 100); 
+
+
+  - platform: template 
+    id: f2
+    name: 'FEMUR2 (fns_h0_pwm4) LEG2'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 33 
+    on_value: 
+        - lambda: |-
+            id(femur2).write(x  / 100); 
+                                                      
+  - platform: template 
+    id: t2
+    name: 'TIBIA2 (fns_h0_pwm3) LEG2'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 35
+    on_value: 
+        - lambda: |-
+            id(tibia2).write(x  / 100); 
+                  
+ ####Freenove Hexapod SHIELD LEG3
+  - platform: template 
+    id: c3
+    name: 'COXA3 (fns_h0_pwm11) LEG3'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 37
+    on_value: 
+        - lambda: |-
+            id(coxa3).write(x  / 100);  
+
+                      
+  - platform: template 
+    id: f3
+    name: 'FEMUR3 (fns_h0_pwm7) LEG3'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 39   
+    on_value: 
+        - lambda: |-
+            id(femur3).write(x  / 100);         
+
+  - platform: template 
+    id: t3
+    name: 'TIBIA3 (fns_h0_pwm6) LEG3'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 41  
+    on_value: 
+        - lambda: |-
+            id(tibia3).write(x  / 100); 
+
+    ####Freenove Hexapod SHIELD LEG4
+  - platform: template 
+    id: c4
+    name: 'COXA4 (fns_h1_pwm13) LEG4'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 43
+    on_value: 
+        - lambda: |-
+            id(coxa4).write(x  / 100);                
+
+
+
+  - platform: template 
+    id: f4
+    name: 'FEMUR4 (fns_h1_pwm14) LEG4'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 45 
+    on_value: 
+        - lambda: |-
+            id(femur4).write(-x  / 100);     
+
+
+  - platform: template 
+    id: t4
+    name: 'TIBIA4 (fns_h1_pwm15)LEG4'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 47
+    on_value: 
+        - lambda: |-
+            id(tibia4).write(-x  / 100);          
+
+
+    ####Freenove Hexapod SHIELD LEG5
+  - platform: template
+    id: c5
+    name: 'COXA5 (fns_h1_pwm2) LEG5'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 49   
+    on_value: 
+        - lambda: |-
+            id(coxa5).write(x  / 100);          
+
+
+  - platform: template 
+    id: f5
+    name: 'FEMUR5 (fns_h1_pwm11) LEG5'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 51    
+    on_value: 
+        - lambda: |-
+            id(femur5).write(-x  / 100);          
+
+
+  - platform: template 
+    id: t5
+    name: 'TIBIA5 (fns_h1_pwm12) LEG5'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 53  
+    on_value: 
+        - lambda: |-
+            id(tibia5).write(-x  / 100); 
+
+
+ ####Freenove Hexapod SHIELD LEG6
+  - platform: template
+    id: c6
+    name: 'COXA6 (fns_h1_pwm0) LEG6'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 55    
+    on_value: 
+        - lambda: |-
+            id(coxa6).write(x  / 100);            
+
+  - platform: template
+    id: f6
+    name: 'FEMUR6 (fns_h1_pwm8) LEG6'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step: 1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 57
+    on_value: 
+        - lambda: |-
+            id(femur6).write(-x  / 100); 
+
+
+
+  - platform: template
+    id: t6
+    name: 'TIBIA6 (fns_h1_pwm9) LEG6'
+    icon: mdi:ship-wheel
+    optimistic: True
+    entity_category: ""
+    min_value: -100
+    max_value: 100
+    step:  1
+    initial_value: 0
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 59 
+    on_value: 
+        - lambda: |-
+            //inverted for right side symmetry
+            id(tibia6).write(-x  / 100);
+
+
+text_sensor:
+
+  - platform: uptime
+    name: MCU UPtime
+    # web_server:
+    #   sorting_group_id: sorting_group_mcu    
+    format:
+      separator: " "
+      days: "D"
+binary_sensor:
+  # Standby status sensor
+  - platform: template
+    id: standby_status
+    name: "Standby Status"
+    entity_category: config
+    lambda: |-
+      if (id(is_in_standby)) {
+        return 1;
+      } else {
+        return 0;
+      } 
+sensor:
+
+  # Battery voltage monitoring for standby decisions
+  - platform: ads7830
+    channel: 0
+    name: "Battery Voltage(SERVO)"
+    id: battery_voltage_1
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    update_interval: 10s
+    # filters:
+    #   - multiply: 3  # Voltage divider compensation
+    on_value:
+      - lambda: |-
+          // Auto-enter standby if battery is low
+          if (x < 3.9 && !id(is_in_standby)) {
+            ESP_LOGW("battery", "Low battery detected (%.2fV), entering standby", x);
+            id(standby_mode_enter).execute();
+          }
+
+  - platform: ads7830
+    channel: 1
+    name: "Battery Voltage(MCU)"
+    id: battery_voltage_2
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    update_interval: 10s
+    # filters:
+    #   - multiply: 3  # Voltage divider compensation  
+
+  # - platform: ultrasonic ### Freenove Hexapod Shield GPIO 27 and 22 (Ultrasonic Sensor).
+  #   trigger_pin: GPIO8 ### Freenove Hexapod Shield GPIO 27
+  #   echo_pin: GPIO9 ### Freenove Hexapod Shield GPIO 22
+  #   name: "FNS Ultrasonic Sensor"
+  #   update_interval: 5s
+
+
+  - platform: mpu6050 #### https://community.home-assistant.io/t/help-with-calculating-pitch-and-roll-from-mpu6050/281060/4
+    address: 0x68
+    accel_x:
+      id: accel_x
+      # name: "MPU6050 Accel X"
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    accel_y:
+      id: accel_y
+      # name: "MPU6050 Accel Y"
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    accel_z:
+      id: accel_z
+      # name: "MPU6050 Accel z"
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    gyro_x:
+      # name: "MPU6050 Gyro X"
+      id: gyro_x
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    gyro_y:
+      # name: "MPU6050 Gyro Y"
+      id: gyro_y
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    gyro_z:
+      # name: "MPU6050 Gyro z"
+      id: gyro_z
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    temperature:
+      id: "mpu6050_temp"
+      filters:
+       - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    update_interval: 10ms
+  
+  - platform: template
+    id: z_comp
+    name: "Compensated Kalman Pitch"
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 11    
+    lambda: |-
+      return id(kalman_pitch) - id(pitch_offset);
+    update_interval: 50ms
+    filters: 
+      - delta: 0.3
+          
+  - platform: template
+    id: y_comp
+    name: "Compensated Kalman Roll"
+    web_server:
+      sorting_group_id: sorting_group_servocontrol
+      sorting_weight: 11      
+    lambda: |-
+      return id(kalman_roll) - id(roll_offset);
+    update_interval: 50ms
+    filters: 
+      - delta: 0.3
+
+  # PID Control Monitoring Sensors (with initialization guards)
+  - platform: template
+    id: pitch_pid_sensor
+    name: "Pitch PID Output"
+    icon: mdi:chart-line-variant
+    unit_of_measurement: "°"
+    accuracy_decimals: 2
+    lambda: |-
+      if (id(stability_enabled)) {
+        return id(pitch_pid_output);
+      } else {
+        return 0.0;
+      }
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 80
+
+  - platform: template
+    id: roll_pid_sensor
+    name: "Roll PID Output"
+    icon: mdi:chart-line-variant
+    unit_of_measurement: "°"
+    accuracy_decimals: 2
+    lambda: |-
+      if (id(stability_enabled)) {
+        return id(roll_pid_output);
+      } else {
+        return 0.0;
+      }
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 81
+
+  - platform: template
+    id: pitch_angle_sensor
+    name: "Pitch Angle (Calibrated)"
+    icon: mdi:angle-acute
+    unit_of_measurement: "°"
+    accuracy_decimals: 2
+    lambda: |-
+      float raw_pitch = id(kalman_pitch);
+      float offset = id(pitch_offset);
+      
+      // Sanity check for reasonable values
+      if (abs(raw_pitch) > 1000.0 || abs(offset) > 1000.0) {
+        ESP_LOGW("pitch_sensor", "Invalid values detected: raw=%.2f, offset=%.2f", raw_pitch, offset);
+        return {};  // Return no value if invalid
+      }
+      
+      return raw_pitch - offset;
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 82
+
+  - platform: template
+    id: roll_angle_sensor
+    name: "Roll Angle (Calibrated)"
+    icon: mdi:angle-acute
+    unit_of_measurement: "°"
+    accuracy_decimals: 2
+    lambda: |-
+      float raw_roll = id(kalman_roll);
+      float offset = id(roll_offset);
+      
+      // Sanity check for reasonable values
+      if (abs(raw_roll) > 1000.0 || abs(offset) > 1000.0) {
+        ESP_LOGW("roll_sensor", "Invalid values detected: raw=%.2f, offset=%.2f", raw_roll, offset);
+        return {};  // Return no value if invalid
+      }
+      
+      return raw_roll - offset;
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 83
+
+
+uart:
+  baud_rate: 460800 ###Working config to with XIAO esp32s3-sense connected from USBC to USBC.
+  # baud_rate: 256000
+  tx_pin: 18
+  rx_pin: 19
+  id: USB_SERIAL_JTAG
+  #rx_buffer_size:  # dont change buffer or will not boot.
+
+uart_p2p_receiver:
+  # uart_id: usb_uart
+  uart_id: USB_SERIAL_JTAG
+  sensors:
+    - id: remote_servo
+      name: X axis
+      icon: mdi:arrow-left-right
+      accuracy_decimals: 3
+      address: 0x01
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 20      
+      # on_value:
+      #   then:
+      #     - lambda: |-
+      #         float floatValue = x; // Example float
+      #         std::string str = std::to_string(floatValue); // Convert to string
+      #         const char* charPtr = str.c_str();
+      #         auto call = id(local_servo).make_call();
+      #         call.set_value(atof(charPtr));
+      #         call.perform();
+    - id: remote_throttle
+      name: Right Trigger
+      icon: mdi:arrow-right-bold-hexagon-outline
+      accuracy_decimals: 3
+      address: 0x02
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 21      
+      # on_value:
+      #   then:    
+          # - lambda: |-                                   
+          #     float floatValue = x; // Example float
+          #     std::string str = std::to_string(floatValue); // Convert to string
+          #     const char* charPtr = str.c_str();
+          #     auto call = id(local_throttle).make_call();
+          #     call.set_value(atof(charPtr));
+          #     call.perform();
+    - id: remote_reverse
+      name: Left Trigger
+      icon: mdi:arrow-left-bold-hexagon-outline
+      accuracy_decimals: 3
+      address: 0x03
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 22      
+      # on_value:
+      #   then:
+      #     - lambda: |-
+      #         float floatValue = x; // Example float
+      #         std::string str = std::to_string(floatValue); // Convert to string
+      #         const char* charPtr = str.c_str();
+      #         auto call = id(local_reverse).make_call();
+      #         call.set_value(atof(charPtr));
+      #         call.perform();
+              
+    - id: remote_lthumby
+      icon: mdi:swap-vertical-bold
+      accuracy_decimals: 3
+      address: 0x04
+
+    - id: remote_rthumby
+      icon: mdi:swap-vertical-bold
+      accuracy_decimals: 3
+      address: 0x05
+
+    - id: remote_ble_hat ### FROM BLE HID at LRTX as B:16
+      name: DPAD(HAT)
+      icon: mdi:gamepad-round
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 32
+      accuracy_decimals: 0
+      address: 0x15      
+                  
+  binary_sensors:
+    - id: lora_rx_activity
+      # name: Incoming Control Stream
+      address: 0x18       
+      on_press:
+        then:
+          - light.turn_on:
+              id: rgb
+              red: 0%
+              green: 100%
+              blue: 0%
+              # white: 0%
+              effect: fastPulse
+      on_release:
+        then:
+          - delay: 500ms
+          - light.turn_off:
+              id: rgb        
+
+    - id: remote_mcu_wifi_state
+      address: 0x06
+      on_press:
+        then:
+            - switch.turn_on: mcu_local_wifi
+      on_release:
+        then:
+            - switch.turn_off: mcu_local_wifi
+    - id: remote_xinput_b0
+      name: DpadUP
+      address: 0x07
+      icon: mdi:gamepad-circle-up
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 33    
+    - id: remote_xinput_b1
+      name: DpadDown
+      address: 0x08
+      icon: mdi:gamepad-circle-down
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 33      
+    - id: remote_xinput_b2  
+      name: DpadLeft
+      address: 0x09
+      icon: mdi:gamepad-circle-left
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 35    
+    - id: remote_xinput_b3
+      name: DpadRight
+      address: 0x0A
+      icon: mdi:gamepad-circle-right
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 36      
+    - id: remote_xinput_b4
+      name: Back
+      address: 0x0B
+      icon: "mdi:arrange-send-backward"
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 37      
+    - id: remote_xinput_b5
+      name: Start
+      icon: mdi:view-headline
+      address: 0x0C
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 38     
+    - id: remote_xinput_b6
+      name: LeftStick button
+      icon: "mdi:arrow-top-left-bold-box-outline"
+      address: 0x0D
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 39  
+    - id: remote_xinput_b7
+      name: RightStick button
+      icon: "mdi:arrow-top-right-bold-box-outline"
+      address: 0x0E
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 40
+    - id: remote_xinput_b8
+      name: LeftBumper
+      icon: "mdi:arrow-top-left-thick"
+      address: 0x0F
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 41     
+    - id: remote_xinput_b9
+      name: RightBumper
+      icon: "mdi:arrow-top-right-thick"
+      address: 0x10
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 42     
+    - id: remote_xinput_b12
+      name: A button
+      icon: mdi:alpha-a-circle
+      address: 0x11
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 45     
+    - id: remote_xinput_b13
+      name: B button
+      icon: mdi:alpha-b-circle
+      address: 0x12
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 44    
+    - id: remote_xinput_b14
+      address: 0x13
+      name: X button
+      icon: mdi:alpha-x-circle
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 43    
+    - id: remote_xinput_b15
+      address: 0x14
+      name: Y button
+      icon: mdi:alpha-y-circle
+      web_server:
+        sorting_group_id: sorting_group_robotcontrol
+        sorting_weight: 42    
+
+    # - id: remote_xinput_b16
+    #   address: 0x16
+    #   name: xRecord
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    is_rgbw: False
+    #max_refresh_rate: 3ms
+    pin: GPIO10
+    num_leds: 1
+    # rmt_channel: 1
+    chipset: WS2812
+    # name: RGB Led
+    id: rgb
+    icon: mdi:led-strip
+    effects:
+      - addressable_rainbow:
+          name: "rainbow"
+          speed: 8
+          width: 0
+      - strobe:
+          name: "strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 500ms
+            - state: false
+              duration: 250ms
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 500ms
+      - pulse:
+          name: "pacePulse"
+          transition_length: 0.1s
+          update_interval: 0.9s
+          min_brightness: 0%
+          max_brightness: 50% 
+      - pulse:
+          name: "fastPulse"
+          transition_length: 0.09s
+          update_interval: 0.09s
+          min_brightness: 0%
+          max_brightness: 50% 
+# Hardware components
+ads7830:
+  id: ads7830_hub
+  address: 0x48
+pca9685:
+  - id: fns_pca9685_hub0
+    address: 0x40
+    frequency: 50Hz
+
+  - id: fns_pca9685_hub1
+    address: 0x41
+    frequency: 50Hz
+
+
+output: 
+  - platform: ledc ####freenove shield hexapod shield buzzer (pin1 gpio17)
+    pin: GPIO7
+    id: fns_gpio17
+
+
+ ####Freenove Hexapod SHIELD LEG1
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 0
+    id: fns_h0_pwm0
+    
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 1
+    id: fns_h0_pwm1
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 2
+    id: fns_h0_pwm2
+
+ ####Freenove Hexapod SHIELD LEG4
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 14
+    id: fns_h1_pwm14
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 15
+    id: fns_h1_pwm15
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 13
+    id: fns_h1_pwm13
+ ####Freenove Hexapod SHIELD LEG2
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 3
+    id: fns_h0_pwm3
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 4
+    id: fns_h0_pwm4
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 5
+    id: fns_h0_pwm5
+ ####Freenove Hexapod SHIELD LEG5
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 11
+    id: fns_h1_pwm11
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 12
+    id: fns_h1_pwm12
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 10
+    id: fns_h1_pwm10
+ ####Freenove Hexapod SHIELD LEG3
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 6
+    id: fns_h0_pwm6
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 7
+    id: fns_h0_pwm7
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub0'
+    channel: 11
+    id: fns_h0_pwm11
+ ####Freenove Hexapod SHIELD LEG6
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 8
+    id: fns_h1_pwm8
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 9
+    id: fns_h1_pwm9
+
+  - platform: pca9685
+    pca9685_id: 'fns_pca9685_hub1'
+    channel: 0
+    id: fns_h1_pwm0
+
+#### Servo definitions ####
+servo:
+ ####Freenove Hexapod SHIELD LEG1
+  - id: tibia1
+    output: fns_h1_pwm15
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: femur1
+    output: fns_h1_pwm14
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: coxa1
+    output: fns_h1_pwm13
+    auto_detach_time: 20s
+    transition_length: 1s    
+ ####Freenove Hexapod SHIELD LEG2
+  - id: tibia2
+    output: fns_h1_pwm12
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: femur2
+    output: fns_h1_pwm11
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: coxa2
+    output: fns_h1_pwm10
+    auto_detach_time: 20s
+    transition_length: 1s
+ ####Freenove Hexapod SHIELD LEG3
+  - id: tibia3
+    output: fns_h1_pwm9
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: femur3
+    output: fns_h1_pwm8
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: coxa3
+    output: fns_h1_pwm0
+    auto_detach_time: 20s
+    transition_length: 1s     
+ ####Freenove Hexapod SHIELD LEG4
+  - id: tibia4
+    output: fns_h0_pwm6
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: femur4
+    output: fns_h0_pwm7
+    auto_detach_time: 20s
+    transition_length: 1s
+      
+  - id: coxa4
+    output: fns_h0_pwm11
+    auto_detach_time: 20s
+    transition_length: 1s
+
+
+ ####Freenove Hexapod SHIELD LEG5
+  - id: tibia5
+    output: fns_h0_pwm3
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: femur5
+    output: fns_h0_pwm4
+    auto_detach_time: 20s
+    transition_length: 1s
+      
+  - id: coxa5
+    output: fns_h0_pwm5
+    auto_detach_time: 20s
+    transition_length: 1s
+
+ ####Freenove Hexapod SHIELD LEG6
+  - id: tibia6
+    output: fns_h0_pwm0
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: femur6
+    output: fns_h0_pwm1
+    auto_detach_time: 20s
+    transition_length: 1s
+
+  - id: coxa6
+    output: fns_h0_pwm2
+    auto_detach_time: 20s
+    transition_length: 1s
+
+rtttl:
+  output: fns_gpio17 ####freenove shield hexapod shield buzzer (pin1 gpio17)
+  id: my_rtttl
+  gain: 0.1
+
+select:
+  - platform: logger
+    id: logger_select
+    name: Logger Level
+    entity_category: diagnostic
+  - platform: template
+    name: Play RTTTL
+    icon: mdi:music-note-outline
+    id: rtttl_player
+    web_server:
+      sorting_group_id: sorting_group_robotcontrol
+      sorting_weight: 50 
+    options:
+      - "None"
+      - "spider"
+      - "superman"
+      - "mario"
+      - "skippyTh"
+      - "bevhills"
+      - "elec6"
+      - "piratesTheme"
+      - "xFiles1"
+      - "missionTheme"
+      - "two_short"
+      - "long"      
+      - "siren"
+      - "scaleUp"
+      - "imperialMarch"
+      - "mission_imp"
+      - "simpsons"
+      - "nokiaTun"
+      - "nokia611"
+      - "nokia611Low"
+      - "oFortuna"
+      - "jamesbond"             
+    optimistic: true
+    update_interval: never
+    on_value:
+      then:
+        - if:
+            condition:
+              - lambda: 'return x == "None";'
+            then:
+              - rtttl.stop
+        - if:
+            condition:
+              - lambda: 'return x == "mario";'
+            then:
+              - rtttl.play: 'mario:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g,8p,8c6,16p,8g,16p,8e,16p,8a,8b,16a#,8a,16g.,16e6,16g6,8a6,16f6,8g6,8e6,16c6,16d6,8b,16p,8c6,16p,8g,16p,8e,16p,8a,8b,16a#,8a,16g.,16e6,16g6,8a6,16f6,8g6,8e6,16c6,16d6,8b,8p,16g6,16f#6,16f6,16d#6,16p,16e6,16p,16g#,16a,16c6,16p,16a,16c6,16d6,8p,16g6,16f#6,16f6,16d#6,16p,16e6,16p,16c7,16p,16c7,16c7,p,16g6,16f#6,16f6,16d#6,16p,16e6,16p,16g#,16a,16c6,16p,16a,16c6,16d6,8p,16d#6,8p,16d6,8p,16c6'
+        - if:
+            condition:
+              - lambda: 'return x == "skippyTh";'
+            then:
+              - rtttl.play: 'skippyTh:d=4,o=5,b=112:16f,16g,16a,a#,32p,16d,8c,p,16f,16a#,16a#,16a#,16a#,16p,16d,c,32p,16f,16a#,16a#,16a#,8a#,16d,16c,16p,16d,16d#,16p,16c,16d,8p,8f,16p,f.'
+        - if:
+            condition:
+              - lambda: 'return x == "bevhills";'
+            then:
+              - rtttl.play: 'bevhills:d=4,o=5,b=160:f#,8a.,8f#,16f#,8a#,8f#,8e,f#,8c.6,8f#,16f#,8d6,8c#6,8a,8f#,8c#6,8f#6,16f#,8e,16e,8c#,8g#,f#.'
+        - if:
+            condition:
+              - lambda: 'return x == "elec6";'
+            then:
+              - rtttl.play: 'elec6:d=16,o=5,b=180:8d.,p,d,p,f,p,g,p,f,p,32d,p.,32c#,p.,8c.,p,32c,p.,8a.4,p,32c,p.,32c#,p.,32c,p.,8d.,p,d,p,f,p,g,p,f,p,d,p,32c#,p.,8c.,p,32c,p.,8a.4,p,c,p,32c#,p.,32c'
+        - if:
+            condition:
+              - lambda: 'return x == "piratesTheme";'
+            then:
+              - rtttl.play: 'piratesTheme:d=4,o=6,b=200:8d,8e,2f,8g,8a,g,f,e,f,g,a,g,p,8f,8g,a,p,8g,8f,e,f,e,d,p,8e,8c,d,8p,p,8d,8e,f,p,8e,8f,g,f,g,a,g,f,d'
+        - if:
+            condition:
+              - lambda: 'return x == "missionTheme";'
+            then:
+              - rtttl.play: 'missionTheme:d=4,o=5,b=112:16g6,8p,16g6,8p,16f6,16p,16f#6,16p,16g6,8p,16g6,8p,16a#6,16p,16c7,16p,16g6,8p,16g6,8p,16f6,16p,16f#6,16p,16g6,8p,16g6,8p,16a#6,16p,16c7,16p,16a#6,16g6,2d6,32p,16a#6,16g6,2c#6,32p,16a#6,16g6,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d'
+        - if:
+            condition:
+              - lambda: 'return x == "simpsons";'
+            then:
+              - rtttl.play: 'simpsons:d=4,o=5,b=160:32p,c.6,e6,f#6,8a6,g.6,e6,c6,8a,8f#,8f#,8f#,2g'
+        - if:
+            condition:
+              - lambda: 'return x == "superman";'
+            then:
+              - rtttl.play: 'superman:d=4,o=6,d=8,b=180,b=180:g5,g5,g5,4c,c,2g,p,g,a.,16g,f,1g,p,g5,g5,g5,4c,c,2g,p,g,a.,16g,f,a,2g.,4p,c,c,c,2b.,4g.,c,c,c,2b.,4g.,c,c,c,b,a,b,2c7,c,c,c,c,c,2c.'
+          
+          # Custom RTTTL tunes can be added here
+          # - if:
+          #     condition:
+          #       - lambda: 'return x == "custom_tune";'
+          #     then:
+          #       - rtttl.play: 'custom_tune:d=4,o=5,b=120:...'
+

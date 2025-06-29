@@ -1,0 +1,4 @@
+name: "ADS7830 Sensor"
+domain: ads7830
+version: "1.0"
+dependencies: ["i2c", "sensor"]
