@@ -36,15 +36,9 @@ This repository contains ESPHome configurations for a distributed robot control 
 - `l0r430t-514v31.yaml` - Main robot controller
 - `l0r430t-514v31-hexapod-IK.yaml` - Hexapod robot with inverse kinematics
 
-### Specialized Devices
-- `esp32-gateway.yaml` - Network gateway configuration
-- `esp32s3-dev.yaml` - Development board configuration
-- `esp32c3wled.yaml` - Compact RGB LED controller
-- `t-display-s3-pro.yaml` - Display-equipped controller
 
 ### Sensor Nodes
 - `mr60bha2.yaml` - Motion sensor configuration
-- `ld2410s.yml` - Presence detection sensor
 - Various environmental sensors in `archive/` folder
 
 ## Custom Components
