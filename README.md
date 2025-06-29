@@ -1,6 +1,6 @@
 # L0R430T - LoRaBot ESPHome Project
 
-A comprehensive ESPHome-based long-range radio communication system for robot control using LoRa technology and Bluetooth HID input.
+A comprehensive ESPHome-based long-range radio communication system for robot control using LoRa technology and Bluetooth HID or PC host as input.
 
 ## Project Overview
 
