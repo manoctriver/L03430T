@@ -1,0 +1,47 @@
+# ESPHome L0R430T LoRaBot Project
+# Gitignore settings for organized ESPHome project
+
+# ESPHome build artifacts and cache
+.esphome/
+.cache/
+
+# Sensitive configuration files
+secrets.yaml
+secrets.yml
+
+# IDE and editor files
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Backup files
+*.backup
+*.bak
+
+# OS-specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Development and testing files
+*-test.yaml
+*-dev.yaml
+*-local.yaml
+
+# Component build artifacts
+components/*/__pycache__/
+components/*/*.pyc
